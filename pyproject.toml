@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "navigation-models"
+version = "0.1.0"
+description = "Strapdown INS and GNSS receiver toy models"
+authors = ["Your Name <your.email@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "3.12.10"
+numpy = "^1.26.0"
+matplotlib = "^3.8.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
