@@ -391,10 +391,12 @@ def plot_ofk2_params_time(data, out_path=None):
     """Один PNG: отдельная панель на каждый L*/M* (оценка vs теория во времени)."""
     from ..filtering.ofk2_theory import PARAM_NAMES
 
-    t = np.asarray(data["time"], dtype=float)
+    t = np.asarray(data["ofk2_time"], dtype=float)
     path = Path(out_path or "ofk2_params_time.png")
-    th = np.asarray(data.get("sp_theory_vec", []), dtype=float)
-    ekf = np.asarray(data["sp_params"], dtype=float)
+    th_trim = np.asarray(data.get("sp_theory_vec_trim", []), dtype=float)
+    th_t = np.asarray(data["ofk2_theory"], dtype=float)
+    ekf = np.asarray(data["ofk2_params"], dtype=float)
+    start_err = 100.0 * float(data.get("coeff_start_err", 0.0))
     n = len(PARAM_NAMES)
     ncols = 2
     nrows = int(np.ceil(n / ncols))
@@ -405,9 +407,22 @@ def plot_ofk2_params_time(data, out_path=None):
     for k, name in enumerate(PARAM_NAMES):
         ax = axes_flat[k]
         ax.plot(t, ekf[k], color="C0", lw=1.5, label="ОФК-2")
-        if th.size > k:
-            ax.axhline(th[k], color="k", ls="--", lw=1.2, label="теория")
-            ax.plot(t[0], ekf[k, 0], "o", color="C3", ms=6, label="старт (+50%)")
+        ax.plot(t, th_t[k], color="k", lw=1.2, label="теория FX1(t)")
+        if th_trim.size > k:
+            ax.axhline(
+                th_trim[k], color="darkorange", ls="--", lw=1.1,
+                label="теория на балансировке",
+            )
+            ax.plot(
+                t[0], ekf[k, 0], "o", color="C3", ms=6,
+                label=f"старт (+{start_err:.0f}%)",
+            )
+        # для малых коэффициентов (Lθ, Mθ, Lv, Mv) — масштаб по данным
+        if max(abs(th_trim[k]), float(np.max(np.abs(ekf[k]))), float(np.max(np.abs(th_t[k])))) < 0.02:
+            yc = np.concatenate([ekf[k], th_t[k], [th_trim[k]]])
+            pad = max(0.0003, 0.15 * float(np.ptp(yc)) if np.ptp(yc) > 0 else 0.001)
+            mid = float(np.median(yc))
+            ax.set_ylim(mid - pad, mid + pad)
         ax.set_ylabel(name)
         ax.set_title(name)
         ax.legend(fontsize=7, loc="best")
@@ -420,67 +435,280 @@ def plot_ofk2_params_time(data, out_path=None):
         ax.set_xlabel("Время (с)")
 
     fig.suptitle(
-        "ОФК-2 short-period: L*, M* во времени (сплошная — оценка, пунктир — теория)",
+        "ОФК-2 short-period: L*, M* во времени "
+        "(синяя — оценка, чёрная — эталон FX1(t), оранжевая — балансировка)",
         fontsize=12,
     )
     plt.tight_layout()
     plt.savefig(path, dpi=150)
     plt.close(fig)
     print(f"\nPlot saved to {path}")
+
+
+def plot_ofk2_params_with_three_sigma(data, out_path=None):
+    """
+    Hoff: θ̂(t) с полосами [θ̂ − 3σ, θ̂ + 3σ]; пунктир — эталон на балансировке.
+    """
+    from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
+
+    t = np.asarray(data["ofk2_time"], dtype=float)
+    path = Path(out_path or "ofk2_params_three_sigma.png")
+    th_trim = np.asarray(data.get("sp_theory_vec_trim", []), dtype=float)
+    ekf = np.asarray(data["ofk2_params"], dtype=float)
+    std = np.asarray(data["ofk2_std"], dtype=float)
+    names = REPORT_PARAM_NAMES
+    n = len(names)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 2.8 * nrows), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
+
+    for ax, pi, name in zip(axes_flat, REPORT_PARAM_INDICES, names):
+        band = 3.0 * std[pi]
+        ax.fill_between(
+            t, ekf[pi] - band, ekf[pi] + band,
+            alpha=0.25, color="mediumpurple", label=r"$\pm 3\sigma$",
+        )
+        ax.plot(t, ekf[pi], color="C0", lw=1.5, label=r"$\hat{\theta}$")
+        if th_trim.size > pi:
+            ax.axhline(
+                th_trim[pi], color="darkorange", ls="--", lw=1.1,
+                label="теория (балансировка)",
+            )
+        ax.set_ylabel(name)
+        ax.set_title(name)
+        ax.legend(fontsize=7, loc="best")
+        ax.grid(True, alpha=0.3)
+
+    for j in range(n, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    for ax in axes_flat[max(0, n - ncols) : n]:
+        ax.set_xlabel("Время (с)")
+
+    fig.suptitle(
+        "ОФК-2 (Hoff): оценка параметров и полосы ±3σ",
+        fontsize=12,
+    )
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"\nPlot saved to {path}")
+
+
+def _plot_ofk2_error_three_sigma_panels(
+    t,
+    err,
+    std,
+    param_names,
+    param_indices,
+    *,
+    title: str,
+    out_path: Path,
+    band_color: str = "mediumpurple",
+    line_color: str = "darkblue",
+    band_label: str = r"$\pm 3\sigma$",
+    line_label: str = r"$\Delta$",
+):
+    fig, axes = plt.subplots(len(param_names), 1, figsize=(12, 2.2 * len(param_names)), sharex=True)
+    axes = np.atleast_1d(axes)
+
+    for ax, pi, name in zip(axes, param_indices, param_names):
+        band = 3.0 * std[pi]
+        ax.fill_between(
+            t, -band, band, alpha=0.2, color=band_color, label=band_label,
+        )
+        ax.plot(t, err[pi], color=line_color, lw=1.05, label=line_label)
+        ax.axhline(0.0, color="gray", lw=0.7, ls=":")
+        ax.set_ylabel(name)
+        ax.grid(True, alpha=0.3)
+        if pi == param_indices[0]:
+            ax.legend(loc="upper right", fontsize=8)
+
+    axes[0].set_title(title)
+    axes[-1].set_xlabel("Время (с)")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Plot saved to {out_path}")
+
+
+def plot_ofk2_error_with_posterior_three_sigma(data, out_dir=None):
+    """ОФК-2 (новая модель): Δ = θ̂ − θ_trim и полосы ±3σ (без Lθ, Mθ)."""
+    from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
+
+    t = np.asarray(data["ofk2_time"], dtype=float)
+    err = np.asarray(
+        data.get("ofk2_d_params_trim", data["ofk2_d_params"]), dtype=float
+    )
+    std = np.asarray(data["ofk2_std"], dtype=float)
+
+    base = Path(out_dir or "src/plots")
+    base.mkdir(parents=True, exist_ok=True)
+
+    _plot_ofk2_error_three_sigma_panels(
+        t,
+        err,
+        std,
+        REPORT_PARAM_NAMES,
+        REPORT_PARAM_INDICES,
+        title="ОФК-2 (новая модель): ошибка параметров и полосы ±3σ",
+        out_path=base / "ofk2_error_vs_three_sigma_P.png",
+        band_label=r"$\pm 3\sigma$ фильтра",
+        line_label="ошибка: оценка − балансировка",
+    )
+
+
+def plot_ofk2_error_legacy_three_sigma(data, out_dir=None):
+    """ОФК-2 (Hoff, 3 рег., 6 coeff): Δ = θ̂ − θ_trim и полосы ±3σ."""
+    from ..filtering.ofk2_ekf_legacy import LEGACY_PARAM_NAMES
+
+    if "ofk2_legacy_d_params_trim" not in data:
+        print("plot_ofk2_error_legacy_three_sigma: нет legacy-лога, пропуск")
+        return
+
+    t = np.asarray(data["ofk2_time"], dtype=float)
+    err = np.asarray(data["ofk2_legacy_d_params_trim"], dtype=float)
+    std = np.asarray(data["ofk2_legacy_std"], dtype=float)
+
+    base = Path(out_dir or "src/plots")
+    base.mkdir(parents=True, exist_ok=True)
+
+    _plot_ofk2_error_three_sigma_panels(
+        t,
+        err,
+        std,
+        LEGACY_PARAM_NAMES,
+        tuple(range(len(LEGACY_PARAM_NAMES))),
+        title="ОФК-2 (Hoff, 3 рег.): ошибка параметров и полосы ±3σ",
+        out_path=base / "ofk2_error_vs_three_sigma_legacy.png",
+        band_color="darkorange",
+        line_color="firebrick",
+        band_label=r"$\pm 3\sigma$ фильтра",
+        line_label="ошибка: оценка − балансировка",
+    )
+
+
+def plot_ofk2_theory_drift(data, out_path=None):
+    """
+    Дрейф самого эталона: θ_FX1(t) на такте ОФК-2 против θ_FX1(t₀) с балансировки.
+
+    Отвечает на вопрос, меняется ли «истина» из-за внутренней динамики ЛА.
+    """
+    from ..filtering.ofk2_theory import PARAM_NAMES
+
+    t = np.asarray(data["ofk2_time"], dtype=float)
+    th = np.asarray(data["ofk2_theory"], dtype=float)
+    est = np.asarray(data["ofk2_params"], dtype=float)
+    th_trim = np.asarray(data["sp_theory_vec_trim"], dtype=float)
+
+    path = Path(out_path or "ofk2_theory_drift.png")
+    n = len(PARAM_NAMES)
+    nrows = int(np.ceil(n / 2))
+
+    fig, axes = plt.subplots(nrows, 2, figsize=(12, 2.9 * nrows), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
+
+    for k, name in enumerate(PARAM_NAMES):
+        ax = axes_flat[k]
+        ax.plot(t, th[k], color="k", lw=1.4, label=r"$\theta_{\mathrm{FX1}}(t)$")
+        ax.axhline(
+            th_trim[k], color="darkorange", ls="--", lw=1.2,
+            label=r"$\theta_{\mathrm{FX1}}(t_0)$ балансировка",
+        )
+        ax.plot(t, est[k], color="C0", lw=1.0, alpha=0.75, label="ОФК-2")
+        span = 100.0 * np.ptp(th[k]) / max(abs(th_trim[k]), 1e-12)
+        ax.set_title(f"{name}   размах эталона {span:.1f}%")
+        ax.set_ylabel(name)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=6, loc="best")
+
+    for j in range(n, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+    for ax in axes_flat[max(0, n - 2) : n]:
+        ax.set_xlabel("Время (с)")
+
+    fig.suptitle(
+        "ОФК-2: дрейф эталона FX1 во времени против фиксированной балансировки",
+        fontsize=12,
+    )
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"\nPlot saved to {path}")
+
+
+def print_ofk2_theory_drift_table(data) -> None:
+    """Числа к ``plot_ofk2_theory_drift``: насколько эталон уходит от балансировки."""
+    from ..filtering.ofk2_theory import PARAM_NAMES
+
+    th = np.asarray(data["ofk2_theory"], dtype=float)
+    est = np.asarray(data["ofk2_params"], dtype=float)
+    std = np.asarray(data["ofk2_std"], dtype=float)
+    th_trim = np.asarray(data["sp_theory_vec_trim"], dtype=float)
+
+    print("\n" + "=" * 96)
+    print("ОФК-2: дрейф эталона FX1 и итоговая ошибка (такт ОФК-2)")
+    print("=" * 96)
+    print(
+        f"{'':>5s}  {'trim':>9s}  {'min(t)':>9s}  {'max(t)':>9s}  "
+        f"{'размах%':>8s}  {'оценка':>9s}  {'Δ(t)':>9s}  {'Δtrim':>9s}  {'3σ':>8s}"
+    )
+    print("-" * 96)
+    for k, name in enumerate(PARAM_NAMES):
+        base = max(abs(th_trim[k]), 1e-12)
+        print(
+            f"{name:>5s}  {th_trim[k]:9.4f}  {th[k].min():9.4f}  {th[k].max():9.4f}  "
+            f"{100 * np.ptp(th[k]) / base:8.1f}  {est[k, -1]:9.4f}  "
+            f"{est[k, -1] - th[k, -1]:9.4f}  {est[k, -1] - th_trim[k]:9.4f}  "
+            f"{3 * std[k, -1]:8.4f}"
+        )
+    print("-" * 96)
 
 
 def plot_ofk2_error_start_vs_end(data, out_path=None):
-    """Столбцы: |Δ| на старте и в конце для каждого L*, M*."""
-    from ..filtering.ofk2_theory import PARAM_NAMES
+    """Кривые Δ(t): оценка − trim; пунктир — дрейф эталона FX1(t) − trim (без Lθ, Mθ)."""
+    from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
 
     path = Path(out_path or "ofk2_error_start_end.png")
-    th = np.asarray(data.get("sp_theory_vec", []), dtype=float)
-    ekf = np.asarray(data["sp_params"], dtype=float)
-    dlt = np.asarray(data["d_params"], dtype=float)
-    n = len(PARAM_NAMES)
-    err0 = np.abs(dlt[:, 0])
-    err1 = np.abs(dlt[:, -1])
-    # относительная ошибка |Δ|/|теория|
-    rel0 = err0 / np.maximum(np.abs(th[:n]), 1e-9)
-    rel1 = err1 / np.maximum(np.abs(th[:n]), 1e-9)
+    err_trim = np.asarray(data["ofk2_d_params_trim"], dtype=float)
+    th_inst = np.asarray(data["ofk2_theory"], dtype=float)
+    th_trim = np.asarray(data.get("sp_theory_vec_trim", data.get("sp_theory_vec", [])), dtype=float)
+    drift = th_inst - th_trim.reshape(-1, 1)
+    t = np.asarray(data["ofk2_time"], dtype=float)
 
-    x = np.arange(n)
-    w = 0.36
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    names = REPORT_PARAM_NAMES
+    n = len(names)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.5 * nrows), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
 
-    axes[0].bar(x - w / 2, err0, w, label="старт (|Δ|)", color="C3")
-    axes[0].bar(x + w / 2, err1, w, label="итог (|Δ|)", color="C0")
-    axes[0].set_xticks(x)
-    axes[0].set_xticklabels(list(PARAM_NAMES))
-    axes[0].set_ylabel(r"$|\hat\theta - \theta_{\mathrm{теор}}|$")
-    axes[0].set_title("Абсолютная ошибка: старт → итог")
-    axes[0].legend(fontsize=9)
-    axes[0].grid(True, axis="y", alpha=0.3)
-
-    axes[1].bar(x - w / 2, 100.0 * rel0, w, label="старт", color="C3")
-    axes[1].bar(x + w / 2, 100.0 * rel1, w, label="итог", color="C0")
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels(list(PARAM_NAMES))
-    axes[1].set_ylabel("% от |теории|")
-    axes[1].set_title("Относительная ошибка: старт → итог")
-    axes[1].legend(fontsize=9)
-    axes[1].grid(True, axis="y", alpha=0.3)
-
-    # подписи итоговых %
-    for i in range(n):
-        axes[1].text(
-            i + w / 2,
-            100.0 * rel1[i],
-            f"{100.0 * rel1[i]:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=7,
+    start_err = float(data.get("coeff_start_err", 0.3))
+    for ax, pi, name in zip(axes_flat, REPORT_PARAM_INDICES, names):
+        ax.plot(t, err_trim[pi], color="C0", lw=1.15, label="ОФК-2")
+        ax.plot(
+            t, drift[pi], color="k", lw=1.0, ls="--", alpha=0.85,
+            label="вычисляемый эталон",
         )
+        ax.axhline(0.0, color="darkorange", lw=1.0, ls=":", label="эталон")
+        ax.plot(t[0], err_trim[pi, 0], "o", color="C3", ms=5)
+        ax.plot(t[-1], err_trim[pi, -1], "s", color="C2", ms=5)
+        ax.set_ylabel(name)
+        ax.set_title(name, fontsize=9)
+        ax.grid(True, alpha=0.3)
+        if pi == REPORT_PARAM_INDICES[0]:
+            ax.legend(fontsize=6.5, loc="upper right")
 
-    t0 = float(data["time"][0])
-    t1 = float(data["time"][-1])
+    for j in range(n, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+    for ax in axes_flat[max(0, n - ncols) : n]:
+        ax.set_xlabel("Время (с)")
+
     fig.suptitle(
-        f"ОФК-2: ошибка идентификации L*,M*  (t={t0:.1f} с → t={t1:.1f} с, старт +50%)",
+        f"ОФК-2: ошибка оценки и дрейф вычисляемого эталона FX1(t)  "
+        f"(старт +{100 * start_err:.0f}% от балансировки)",
         fontsize=12,
     )
     plt.tight_layout()
@@ -488,12 +716,14 @@ def plot_ofk2_error_start_vs_end(data, out_path=None):
     plt.close(fig)
 
     print(f"\nPlot saved to {path}")
-    print(f"{'параметр':<8s}  {'|Δ| старт':>12s}  {'|Δ| итог':>12s}  {'% старт':>10s}  {'% итог':>10s}")
-    print("-" * 60)
-    for i, name in enumerate(PARAM_NAMES):
+    print(f"{'параметр':<8s}  {'trim':>10s}  {'|Δ|старт':>10s}  {'|Δ|итог':>10s}  {'FX1 размах':>12s}")
+    print("-" * 58)
+    for pi, name in zip(REPORT_PARAM_INDICES, names):
+        err0 = abs(err_trim[pi, 0])
+        err1 = abs(err_trim[pi, -1])
+        span = float(np.ptp(th_inst[pi]))
         print(
-            f"{name:<8s}  {err0[i]:12.6f}  {err1[i]:12.6f}  "
-            f"{100*rel0[i]:9.1f}%  {100*rel1[i]:9.1f}%"
+            f"{name:<8s}  {th_trim[pi]:10.4g}  {err0:10.6f}  {err1:10.6f}  {span:12.6f}"
         )
 
 

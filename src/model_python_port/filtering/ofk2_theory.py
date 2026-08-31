@@ -1,11 +1,10 @@
 """
 Теоретические L*, M* для ОФК-2 (короткопериодическое движение).
 
-Численный якобиан FX1 в точке балансировки::
+Линеаризация FX1 в точке балансировки::
 
-    [ α̇ ]   [ L_α   L_q   L_δe ] [ δα  ]
-    [ q̇ ] = [ M_α   M_q   M_δe ] [  q  ]
-                                 [ δδe ]
+    α̇ = Lα·δα + Lq·q + Lδe·δδe + Lv·δV + Lθ·δθ
+    q̇ = Mα·δα + Mq·q + Mδe·δδe + Mv·δV + Mθ·δθ
 """
 
 from __future__ import annotations
@@ -14,7 +13,11 @@ import numpy as np
 
 from ..dynamics.fx1 import fx1 as fx1_func
 
-PARAM_NAMES = ("Lα", "Lq", "Lδe", "Mα", "Mq", "Mδe")
+PARAM_NAMES = ("Lα", "Lq", "Lδe", "Lv", "Lθ", "Mα", "Mq", "Mδe", "Mv", "Mθ")
+# Для отчётных графиков ошибки / ±3σ (слабонаблюдаемые Lθ, Mθ в модели остаются)
+REPORT_PARAM_NAMES = ("Lα", "Lq", "Lδe", "Lv", "Mα", "Mq", "Mδe", "Mv")
+REPORT_PARAM_INDICES = tuple(PARAM_NAMES.index(n) for n in REPORT_PARAM_NAMES)
+N_REG = 5
 
 
 def _alpha_from_x(x: np.ndarray) -> float:
@@ -30,6 +33,12 @@ def _set_alpha(x: np.ndarray, alpha: float, thetatr: float = 0.0) -> None:
     x[1] = -v * np.cos(beta) * np.sin(alpha)
     x[2] = v * np.sin(beta)
     x[8] = alpha + thetatr
+
+
+def _set_speed(x: np.ndarray, v_new: float) -> None:
+    v_old = float(np.linalg.norm(x[0:3]))
+    v_old = max(v_old, 1e-9)
+    x[0:3] *= float(v_new) / v_old
 
 
 def _alpha_q_dot(x: np.ndarray, u: np.ndarray, la: dict, t: float = 0.0) -> tuple[float, float]:
@@ -51,6 +60,8 @@ def ofk2_jacobian_at_trim(
     d_alpha: float = 1.0e-4,
     d_q: float = 1.0e-4,
     d_de_rad: float = 1.0e-4,
+    d_v: float = 0.05,
+    d_theta: float = 1.0e-4,
 ) -> dict[str, float]:
     x_base = np.asarray(x0, dtype=float).copy()
     u_base = np.asarray(u0, dtype=float).copy()
@@ -58,46 +69,89 @@ def ofk2_jacobian_at_trim(
     a0 = _alpha_from_x(x_base)
     q0 = float(x_base[5])
     de0_rad = float(x_base[16]) * np.pi / 180.0
+    v0 = float(np.linalg.norm(x_base[0:3]))
+    v0 = max(v0, 1.0)
+    theta0 = float(x_base[8])
 
-    def eval_at(alpha: float, q: float, de_rad: float) -> tuple[float, float]:
+    def eval_at(
+        alpha: float,
+        q: float,
+        de_rad: float,
+        v_mag: float,
+        theta: float,
+    ) -> tuple[float, float]:
         x = x_base.copy()
         u = u_base.copy()
         _set_alpha(x, alpha, thetatr)
+        _set_speed(x, v_mag)
+        x[8] = theta
         x[5] = q
         de_deg = de_rad * 180.0 / np.pi
         x[16] = de_deg
         u[1] = de_deg
         return _alpha_q_dot(x, u, la)
 
-    adot_p, qdot_p = eval_at(a0 + d_alpha, q0, de0_rad)
-    adot_m, qdot_m = eval_at(a0 - d_alpha, q0, de0_rad)
-    la_ = (adot_p - adot_m) / (2.0 * d_alpha)
-    ma_ = (qdot_p - qdot_m) / (2.0 * d_alpha)
+    def deriv_wrt(
+        arg: str,
+        da_: float,
+        dq_: float,
+        dde_: float,
+        dv_: float,
+        dth_: float,
+    ) -> tuple[float, float]:
+        base = (a0, q0, de0_rad, v0, theta0)
+        if arg == "alpha":
+            hi = (a0 + da_, q0, de0_rad, v0, theta0)
+            lo = (a0 - da_, q0, de0_rad, v0, theta0)
+            step = d_alpha
+        elif arg == "q":
+            hi = (a0, q0 + dq_, de0_rad, v0, theta0)
+            lo = (a0, q0 - dq_, de0_rad, v0, theta0)
+            step = d_q
+        elif arg == "de":
+            hi = (a0, q0, de0_rad + dde_, v0, theta0)
+            lo = (a0, q0, de0_rad - dde_, v0, theta0)
+            step = d_de_rad
+        elif arg == "v":
+            hi = (a0, q0, de0_rad, v0 + dv_, theta0)
+            lo = (a0, q0, de0_rad, v0 - dv_, theta0)
+            step = d_v
+        elif arg == "theta":
+            hi = (a0, q0, de0_rad, v0, theta0 + dth_)
+            lo = (a0, q0, de0_rad, v0, theta0 - dth_)
+            step = d_theta
+        else:
+            raise ValueError(arg)
+        adot_p, qdot_p = eval_at(*hi)
+        adot_m, qdot_m = eval_at(*lo)
+        return (adot_p - adot_m) / (2.0 * step), (qdot_p - qdot_m) / (2.0 * step)
 
-    adot_p, qdot_p = eval_at(a0, q0 + d_q, de0_rad)
-    adot_m, qdot_m = eval_at(a0, q0 - d_q, de0_rad)
-    lq_ = (adot_p - adot_m) / (2.0 * d_q)
-    mq_ = (qdot_p - qdot_m) / (2.0 * d_q)
+    la_, ma_ = deriv_wrt("alpha", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lq_, mq_ = deriv_wrt("q", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lde_, mde_ = deriv_wrt("de", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lv_, mv_ = deriv_wrt("v", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lth_, mth_ = deriv_wrt("theta", d_alpha, d_q, d_de_rad, d_v, d_theta)
 
-    adot_p, qdot_p = eval_at(a0, q0, de0_rad + d_de_rad)
-    adot_m, qdot_m = eval_at(a0, q0, de0_rad - d_de_rad)
-    lde_ = (adot_p - adot_m) / (2.0 * d_de_rad)
-    mde_ = (qdot_p - qdot_m) / (2.0 * d_de_rad)
-
-    adot0, qdot0 = eval_at(a0, q0, de0_rad)
+    adot0, qdot0 = eval_at(a0, q0, de0_rad, v0, theta0)
 
     return {
         "alpha0": a0,
         "q0": q0,
         "delta_e0": de0_rad,
+        "v0": v0,
+        "theta0": theta0,
         "alpha_dot0": adot0,
         "q_dot0": qdot0,
         "L_alpha": float(la_),
         "L_q": float(lq_),
         "L_de": float(lde_),
+        "L_v": float(lv_),
+        "L_theta": float(lth_),
         "M_alpha": float(ma_),
         "M_q": float(mq_),
         "M_de": float(mde_),
+        "M_v": float(mv_),
+        "M_theta": float(mth_),
     }
 
 
@@ -107,13 +161,18 @@ def theory_vector(th: dict[str, float]) -> np.ndarray:
             th["L_alpha"],
             th["L_q"],
             th["L_de"],
+            th["L_v"],
+            th["L_theta"],
             th["M_alpha"],
             th["M_q"],
             th["M_de"],
+            th["M_v"],
+            th["M_theta"],
         ],
         dtype=float,
     )
 
 
 def coeff_delta_ekf_minus_theory(x_sp: np.ndarray, th_vec: np.ndarray) -> np.ndarray:
-    return np.asarray(x_sp[:6], dtype=float) - np.asarray(th_vec, dtype=float)
+    n = len(PARAM_NAMES)
+    return np.asarray(x_sp[:n], dtype=float) - np.asarray(th_vec[:n], dtype=float)

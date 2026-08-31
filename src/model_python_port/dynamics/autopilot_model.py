@@ -95,9 +95,14 @@ def elevator_maneuver_active(time: float, kind: str | None) -> bool:
     return False
 
 
-def elevator_program_deg(time: float, kind: str | None) -> float:
+def elevator_program_deg(
+    time: float,
+    kind: str | None,
+    *,
+    doublet_amp_deg: float = 5.0,
+) -> float:
     if kind == "doublet":
-        return elevator_doublet_deg(time)
+        return elevator_doublet_deg(time, amp_deg=float(doublet_amp_deg))
     if kind == "3211":
         return elevator_3211_deg(time)
     return 0.0
@@ -113,6 +118,7 @@ def autopilot(
     tettr,
     *,
     elevator_maneuver: str | None = None,
+    elevator_doublet_amp_deg: float = 5.0,
 ):
     """
     Управление u = [δT, δV, δN, δE].
@@ -132,6 +138,10 @@ def autopilot(
 
     if elevator_maneuver_active(time, elevator_maneuver):
         # не гасим вход: только trim + программа
-        U[1] = float(u0[1]) + elevator_program_deg(time, elevator_maneuver)
+        U[1] = float(u0[1]) + elevator_program_deg(
+            time,
+            elevator_maneuver,
+            doublet_amp_deg=float(elevator_doublet_amp_deg),
+        )
 
     return np.clip(U, UMIN, UMAX)

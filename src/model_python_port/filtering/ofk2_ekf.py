@@ -3,60 +3,84 @@
 
 Уравнения (приращения от trim)::
 
-    α̇ = Lα·δα + Lq·q + Lδe·δδe
-    q̇ = Mα·δα + Mq·q + Mδe·δδe
-    az ≈ az0 − (V/g)·(Lα·δα + (Lq−1)·q + Lδe·δδe)
+    α̇ = Lα·δα + Lq·q + Lδe·δδe + Lv·δV + Lθ·δθ
+    q̇ = Mα·δα + Mq·q + Mδe·δδe + Mv·δV + Mθ·δθ
+    az ≈ az0 − (V/g)·(Lα·δα + (Lq−1)·q + Lδe·δδe + Lv·δV + Lθ·δθ)
 
-Состояние: x = [Lα, Lq, Lδe, Mα, Mq, Mδe]
-Регрессоры δα, q, δδe — из БНК (α, ДУС, привод); без theory-anchor.
-Z = [α̇_fd, q̇_fd, az]  (equation-error + перегрузка)
+Состояние: x = [Lα…Lθ, Mα…Mθ]  (10 коэфф.)
+Z = [α̇_fd, q̇_fd, az]
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from .ofk2_theory import PARAM_NAMES
+from ..common.c_ang import c_ang
+from .ofk2_theory import N_REG, PARAM_NAMES
 
 N_PARAM = len(PARAM_NAMES)
 N_STATE = N_PARAM
 N_MEAS = 3
+N_L = N_REG
 G0 = 9.80665
 
 _EXC_DDE = 0.003
 _EXC_Q = 0.005
 _EXC_DA = 0.008
+_EXC_DV = 0.05
+_EXC_DTH = 0.003
 
 
 def initial_state(param0: np.ndarray) -> np.ndarray:
     return np.asarray(param0, dtype=float).reshape(N_STATE).copy()
 
 
-def initial_covariance() -> np.ndarray:
-    # Lq≈1 — узкий априор (почти кинематика); остальные шире
-    return np.diag(np.array([0.30, 0.08, 0.20, 0.30, 0.30, 0.30], dtype=float) ** 2)
+def initial_covariance(
+    param0: np.ndarray | None = None,
+    *,
+    coeff_start_err: float = 0.3,
+) -> np.ndarray:
+    """P₀: 3σ покрывает начальное смещение ``coeff_start_err·|θ|``."""
+    abs_floor = np.array(
+        [0.05, 0.05, 0.02, 0.01, 0.01, 0.05, 0.05, 0.05, 0.01, 0.01],
+        dtype=float,
+    )
+    if param0 is None:
+        sig = np.array(
+            [0.30, 0.10, 0.20, 0.05, 0.05, 0.30, 0.30, 0.30, 0.05, 0.05],
+            dtype=float,
+        )
+    else:
+        p0 = np.asarray(param0, dtype=float).reshape(N_STATE)
+        sig = np.maximum(np.abs(p0) * float(coeff_start_err) / 3.0, abs_floor * 0.2)
+    return np.diag(sig**2)
 
 
 def process_noise(dt: float, *, adapt: bool) -> np.ndarray:
-    if not adapt:
-        return np.zeros((N_STATE, N_STATE), dtype=float)
-    q = np.array([3e-6, 5e-7, 2e-6, 3e-6, 3e-6, 3e-6], dtype=float) * float(dt)
-    return np.diag(q)
+    return np.zeros((N_STATE, N_STATE), dtype=float)
 
 
 def measurement_covariance(
-    sigma_adot: float = 0.06,
-    sigma_qdot: float = 0.04,
-    sigma_az: float = 0.08,
+    sigma_adot: float = 0.025,
+    sigma_qdot: float = 0.002,
+    sigma_az: float = 0.023,
 ) -> np.ndarray:
     return np.diag(np.array([sigma_adot, sigma_qdot, sigma_az], dtype=float) ** 2)
 
 
-def _has_excitation(da: float, q: float, dde: float) -> bool:
+def _has_excitation(
+    da: float,
+    q: float,
+    dde: float,
+    dv: float,
+    dtheta: float,
+) -> bool:
     return (
         abs(float(dde)) >= _EXC_DDE
         or abs(float(q)) >= _EXC_Q
         or abs(float(da)) >= _EXC_DA
+        or abs(float(dv)) >= _EXC_DV
+        or abs(float(dtheta)) >= _EXC_DTH
     )
 
 
@@ -70,23 +94,60 @@ def reconstruct_alpha_from_nav(np_bins: np.ndarray, cbn: np.ndarray) -> tuple[fl
     return float(alpha), v
 
 
-def build_z_kinematics(
+def reconstruct_theta_from_nav(cbn: np.ndarray) -> float:
+    return float(c_ang(np.asarray(cbn, dtype=float))[1])
+
+
+def build_regressors(
     alpha: float,
     q: float,
     delta_e: float,
-    az: float,
+    v: float,
+    theta: float,
     trim: dict[str, float],
 ) -> np.ndarray:
-    """[δα, q, δδe, az] для лога и регрессоров."""
+    """[δα, q, δδe, δV, δθ]."""
     return np.array(
         [
             float(alpha) - trim["alpha0"],
             float(q),
             float(delta_e) - trim["delta_e0"],
-            float(az),
+            float(v) - trim["v0"],
+            float(theta) - trim["theta0"],
         ],
         dtype=float,
     )
+
+
+def build_z_kinematics(
+    alpha: float,
+    q: float,
+    delta_e: float,
+    v: float,
+    theta: float,
+    az: float,
+    trim: dict[str, float],
+) -> np.ndarray:
+    """[δα, q, δδe, δV, δθ, az] для лога."""
+    reg = build_regressors(alpha, q, delta_e, v, theta, trim)
+    return np.array([*reg, float(az)], dtype=float)
+
+
+def _predict_z(
+    coeffs: np.ndarray,
+    phi: np.ndarray,
+    *,
+    v: float,
+    az0: float,
+) -> np.ndarray:
+    l = coeffs[:N_L]
+    m = coeffs[N_L:]
+    alpha_dot = float(l @ phi)
+    qdot = float(m @ phi)
+    az = float(az0) - (v / G0) * (
+        l[0] * phi[0] + (l[1] - 1.0) * phi[1] + l[2] * phi[2] + l[3] * phi[3] + l[4] * phi[4]
+    )
+    return np.array([alpha_dot, qdot, az], dtype=float)
 
 
 def ekf_step(
@@ -96,104 +157,67 @@ def ekf_step(
     da: float,
     q: float,
     dde: float,
+    dv: float,
+    dtheta: float,
     az: float,
     v: float,
     az0: float,
     dt: float,
-    alpha_smooth: float | None,
-    alpha_smooth_prev: float | None,
-    q_smooth: float | None,
-    q_smooth_prev: float | None,
-    ema_alpha: float = 0.35,
+    da_prev: float | None,
+    q_prev: float | None,
     r: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, float, float]:
-    """
-    Returns
-    -------
-    x_new, p_new, innov[3], a_s, a_s (prev next), q_s, q_s (prev next)
-    """
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
     x = np.asarray(x, dtype=float).reshape(N_STATE)
     p = np.asarray(p, dtype=float)
-    da, q, dde, az = float(da), float(q), float(dde), float(az)
+    da, q, dde = float(da), float(q), float(dde)
+    dv, dtheta, az = float(dv), float(dtheta), float(az)
     v = max(float(v), 1.0)
     dt = float(dt)
     if r is None:
         r = measurement_covariance()
 
-    a_raw = float(da)  # сглаживаем δα как прокси α (trim const)
-    if alpha_smooth is None:
-        a_s = a_raw
-    else:
-        ea = float(ema_alpha)
-        a_s = ea * a_raw + (1.0 - ea) * float(alpha_smooth)
-
-    if q_smooth is None:
-        q_s = q
-    else:
-        ea = float(ema_alpha)
-        q_s = ea * q + (1.0 - ea) * float(q_smooth)
-
-    adapt = _has_excitation(a_s, q_s, dde)
+    adapt = _has_excitation(da, q, dde, dv, dtheta)
     p_pred = p + process_noise(dt, adapt=adapt)
     p_pred = 0.5 * (p_pred + p_pred.T)
     x_pred = x.copy()
-    innov = np.zeros(N_MEAS, dtype=float)
+    innov_post = np.zeros(N_MEAS, dtype=float)
+    innov_prior = np.full(N_MEAS, np.nan, dtype=float)
+    sqrt_s = np.full(N_MEAS, np.nan, dtype=float)
 
-    if (
-        alpha_smooth_prev is None
-        or q_smooth_prev is None
-        or dt <= 0.0
-        or not adapt
-    ):
-        return x_pred, p_pred, innov, a_s, a_s, q_s, q_s
+    if da_prev is None or q_prev is None or dt <= 0.0 or not adapt:
+        return x_pred, p_pred, innov_post, innov_prior, sqrt_s, da, q
 
-    adot = (a_s - float(alpha_smooth_prev)) / dt
-    qdot = (q_s - float(q_smooth_prev)) / dt
-    # регрессоры на текущем шаге
-    phi = np.array([a_s, q_s, dde], dtype=float)
+    adot = (da - float(da_prev)) / dt
+    qdot = (q - float(q_prev)) / dt
+    phi = np.array([da, q, dde, dv, dtheta], dtype=float)
 
-    la, lq, lde, ma, mq, mde = x_pred
-    z_pred = np.array(
-        [
-            la * phi[0] + lq * phi[1] + lde * phi[2],
-            ma * phi[0] + mq * phi[1] + mde * phi[2],
-            float(az0) - (v / G0) * (la * phi[0] + (lq - 1.0) * phi[1] + lde * phi[2]),
-        ],
-        dtype=float,
-    )
+    z_pred = _predict_z(x_pred, phi, v=v, az0=az0)
     z = np.array([adot, qdot, az], dtype=float)
 
-    H = np.zeros((N_MEAS, N_STATE), dtype=float)
-    H[0, 0:3] = phi
-    H[1, 3:6] = phi
+    h = np.zeros((N_MEAS, N_STATE), dtype=float)
+    h[0, :N_L] = phi
+    h[1, N_L:] = phi
     k_az = -(v / G0)
-    H[2, 0] = k_az * phi[0]
-    H[2, 1] = k_az * phi[1]
-    H[2, 2] = k_az * phi[2]
+    h[2, :N_L] = k_az * phi
 
     delta = z - z_pred
-    ph_t = p_pred @ H.T
-    s = H @ ph_t + r
+    ph_t = p_pred @ h.T
+    s = h @ ph_t + r
     s = 0.5 * (s + s.T)
     try:
         k = np.linalg.solve(s, ph_t.T).T
     except np.linalg.LinAlgError:
-        return x_pred, p_pred, innov, a_s, a_s, q_s, q_s
+        return x_pred, p_pred, innov_post, innov_prior, sqrt_s, da, q
+
+    innov_prior = delta.copy()
+    sqrt_s = np.sqrt(np.maximum(np.diag(s), 1e-30))
 
     x_new = x_pred + k @ delta
-    ik = np.eye(N_STATE) - k @ H
+    ik = np.eye(N_STATE) - k @ h
     p_new = 0.5 * (
         (ik @ p_pred @ ik.T + k @ r @ k.T) + (ik @ p_pred @ ik.T + k @ r @ k.T).T
     )
 
-    la, lq, lde, ma, mq, mde = x_new
-    z_hat = np.array(
-        [
-            la * phi[0] + lq * phi[1] + lde * phi[2],
-            ma * phi[0] + mq * phi[1] + mde * phi[2],
-            float(az0) - (v / G0) * (la * phi[0] + (lq - 1.0) * phi[1] + lde * phi[2]),
-        ],
-        dtype=float,
-    )
-    innov = z - z_hat
-    return x_new, p_new, innov, a_s, a_s, q_s, q_s
+    z_hat = _predict_z(x_new, phi, v=v, az0=az0)
+    innov_post = z - z_hat
+    return x_new, p_new, innov_post, innov_prior, sqrt_s, da, q

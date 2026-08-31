@@ -21,9 +21,9 @@
     gnss() добавляет ошибки к истинным координатам/скоростям;
     z = np_bins − np_gnss → фильтр → поправка np_bins
 
-  ЭТАП 5 — ОФК-2 short-period (часто чаще ГНСС, dt_ofk2 ≈ 0.02 с)
-    входы α,V с последнего такта ОФК-1; q, az с ДУС/ДЛУ; δe с привода;
-    оценка Lα,Lq,Lδe,Mα,Mq,Mδe (equation-error по α̇, q̇, az).
+  ЭТАП 5 — ОФК-2 short-period (dt_ofk2 ≈ 0.02 с)
+    α,V,θ из БНК; q, az — ДУС/ДЛУ; δe — привод;
+    оценка Lα…Lθ, Mα…Mθ (5 регрессоров, equation-error).
 """
 
 from __future__ import annotations
@@ -50,17 +50,26 @@ from .initsim import initsim
 from ..filtering.loosely_coupled_ofk import apply_bins_feedback, build_innovation, ofk_step
 from ..filtering.ofk2_ekf import (
     G0,
+    N_MEAS,
     N_PARAM,
     build_z_kinematics,
     ekf_step as sp_ekf_step,
     initial_covariance as sp_initial_covariance,
     initial_state as sp_initial_state,
     reconstruct_alpha_from_nav,
+    reconstruct_theta_from_nav,
 )
 from ..filtering.ofk2_theory import (
+    PARAM_NAMES,
     coeff_delta_ekf_minus_theory,
     ofk2_jacobian_at_trim,
     theory_vector,
+)
+from ..filtering.ofk2_ekf_legacy import (
+    N_PARAM as N_PARAM_LEGACY,
+    ekf_step as sp_ekf_step_legacy,
+    initial_covariance as sp_initial_covariance_legacy,
+    initial_state as sp_initial_state_legacy,
 )
 
 
@@ -69,6 +78,7 @@ def run_simulation(
     dt: float = 1e-3,
     dt_gnss: float = 0.1,
     dt_ofk2: float = 0.02,
+    elevator_doublet_amp_deg: float = 5.0,
 ):
     # ------------------------------------------------------------------
     # Манёвр руля высоты внутри автопилота (канал δV на интервале заморожен).
@@ -111,30 +121,64 @@ def run_simulation(
         sim["x0"], sim["u0"], la, thetatr=float(sim["thetatr"])
     )
     th_vec = theory_vector(sp_theory)
+    th_vec_legacy = np.array(
+        [
+            th_vec[0],
+            th_vec[1],
+            th_vec[2],
+            th_vec[5],
+            th_vec[6],
+            th_vec[7],
+        ],
+        dtype=float,
+    )
     trim = {
         "alpha0": float(sp_theory["alpha0"]),
         "q0": float(sp_theory["q0"]),
         "delta_e0": float(sp_theory["delta_e0"]),
+        "v0": float(sp_theory["v0"]),
+        "theta0": float(sp_theory["theta0"]),
     }
-    # ОФК-2: [Lα,Lq,Lδe,Mα,Mq,Mδe] со смещением +50 % (без theory-anchor)
-    _coeff_start_err = 0.5
+    # ОФК-2: [Lα,Lq,Lδe,Mα,Mq,Mδe] со смещением от теории (без theory-anchor)
+    _coeff_start_err = 0.3
     param0 = th_vec * (1.0 + _coeff_start_err)
     x_sp = sp_initial_state(param0)
-    p_sp = sp_initial_covariance()
-    a_smooth: float | None = None
-    a_smooth_prev: float | None = None
-    q_smooth: float | None = None
-    q_smooth_prev: float | None = None
-    alpha_hold: float | None = None
-    v_hold: float | None = None
+    p_sp = sp_initial_covariance(param0, coeff_start_err=_coeff_start_err)
+    param0_legacy = th_vec_legacy * (1.0 + _coeff_start_err)
+    x_sp_legacy = sp_initial_state_legacy(param0_legacy)
+    p_sp_legacy = sp_initial_covariance_legacy(
+        param0_legacy, coeff_start_err=_coeff_start_err
+    )
+    da_prev: float | None = None
+    q_prev: float | None = None
+    da_prev_legacy: float | None = None
+    q_prev_legacy: float | None = None
     az0: float | None = None
-    delta_sp = np.zeros(3, dtype=float)
-    z_sp = np.zeros(4, dtype=float)
+    th_inst_vec = th_vec.copy()
+    innov_sp = np.zeros(3, dtype=float)
+    z_sp = np.zeros(6, dtype=float)
     dt_ofk2 = float(dt_ofk2)
     step_ofk2 = max(1, int(round(dt_ofk2 / dt)))
 
     step_gnss = max(1, int(round(dt_gnss / dt)))
     n_gnss = int(tmodel / dt_gnss) + 1
+    n_steps = int(tmodel / dt)
+    n_ofk2_max = n_steps // step_ofk2 + 1
+    ofk2_time = np.zeros(n_ofk2_max, dtype=float)
+    ofk2_params = np.zeros((N_PARAM, n_ofk2_max), dtype=float)
+    ofk2_theory = np.zeros((N_PARAM, n_ofk2_max), dtype=float)
+    ofk2_std = np.zeros((N_PARAM, n_ofk2_max), dtype=float)
+    ofk2_d_params = np.zeros((N_PARAM, n_ofk2_max), dtype=float)
+    ofk2_d_params_trim = np.zeros((N_PARAM, n_ofk2_max), dtype=float)
+    ofk2_legacy_params = np.zeros((N_PARAM_LEGACY, n_ofk2_max), dtype=float)
+    ofk2_legacy_std = np.zeros((N_PARAM_LEGACY, n_ofk2_max), dtype=float)
+    ofk2_legacy_d_params_trim = np.zeros((N_PARAM_LEGACY, n_ofk2_max), dtype=float)
+    ofk2_innov_prior = np.full((N_MEAS, n_ofk2_max), np.nan, dtype=float)
+    ofk2_innov_std = np.full((N_MEAS, n_ofk2_max), np.nan, dtype=float)
+    # диагностика: регрессоры [δα, q, δδe, δV, δθ] и истина FX1
+    ofk2_reg = np.zeros((5, n_ofk2_max), dtype=float)
+    ofk2_true_aq = np.zeros((4, n_ofk2_max), dtype=float)
+    ofk2_idx = 0
 
     log = {
         "time": np.zeros(n_gnss),
@@ -188,19 +232,23 @@ def run_simulation(
         "sp_az": np.zeros(n_gnss),
         "sp_params": np.zeros((N_PARAM, n_gnss)),
         "sp_delta": np.zeros((3, n_gnss)),
-        "sp_z": np.zeros((4, n_gnss)),
+        "sp_z": np.zeros((6, n_gnss)),
         "z_nav": np.zeros((6, n_gnss)),
         "true_alpha": np.zeros(n_gnss),
         "true_q": np.zeros(n_gnss),
         "true_az": np.zeros(n_gnss),
         "d_params": np.zeros((N_PARAM, n_gnss)),
+        "d_params_trim": np.zeros((N_PARAM, n_gnss)),
+        "sp_theory_inst": np.zeros((N_PARAM, n_gnss)),
+        "sp_std": np.zeros((N_PARAM, n_gnss)),
     }
+    for _pname in PARAM_NAMES:
+        log[f"ofk2_std_{_pname}"] = np.zeros(n_gnss)
 
     ap_count = 0
     ap_steps = int(0.01 / dt)
     gnss_idx = 0
     a_last = np.zeros(3, dtype=float)
-    n_steps = int(tmodel / dt)
 
     for i in range(n_steps):
         t = (i + 1) * dt
@@ -232,6 +280,7 @@ def run_simulation(
                 vtr,
                 tettr,
                 elevator_maneuver=ELEVATOR_MANEUVER,
+                elevator_doublet_amp_deg=float(elevator_doublet_amp_deg),
             )
 
         # --------------------------------------------------------------
@@ -280,14 +329,17 @@ def run_simulation(
             apply_bins_feedback(np_bins, x_ofk)
             x_ofk[:] = 0.0  # error-state reset после обратной связи
 
-            # α, V из БНК после ОФК-1 — входы ОФК-2
-            alpha_hold, v_hold = reconstruct_alpha_from_nav(np_bins, cbn)
+            # α, V для лога ГНСС (на такте ОФК-2 ниже — каждый шаг 50 Гц)
+            alpha_gnss, v_gnss_sp = reconstruct_alpha_from_nav(np_bins, cbn)
+            theta_gnss = reconstruct_theta_from_nav(cbn)
             q_meas = float(w_m[2])
             az_meas = float(a_m[1]) / G0
             de_meas = float(x[16]) * np.pi / 180.0
             if az0 is None:
                 az0 = az_meas
-            z_sp = build_z_kinematics(alpha_hold, q_meas, de_meas, az_meas, trim)
+            z_sp = build_z_kinematics(
+                alpha_gnss, q_meas, de_meas, v_gnss_sp, theta_gnss, az_meas, trim
+            )
 
             np_etalon = np.array(
                 [v_nav[0], v_nav[1], v_nav[2], x[10], x[12], x[13]], dtype=float
@@ -342,65 +394,119 @@ def run_simulation(
             log["err_ofk_vn"][gnss_idx] = nper_post[0]
             log["err_ofk_ve"][gnss_idx] = nper_post[2]
             log["err_ofk_vh"][gnss_idx] = nper_post[1]
-            log["u"][:, gnss_idx] = u
-            log["z_nav"][:, gnss_idx] = z
-            log["sp_z"][:, gnss_idx] = z_sp
-            log["sp_delta"][:, gnss_idx] = delta_sp
-            log["sp_alpha"][gnss_idx] = alpha_hold
-            log["sp_q"][gnss_idx] = q_meas
-            log["sp_de"][gnss_idx] = de_meas
-            log["sp_az"][gnss_idx] = az_meas
-            log["sp_params"][:, gnss_idx] = x_sp[:N_PARAM]
             log["true_alpha"][gnss_idx] = true_alpha
             log["true_q"][gnss_idx] = true_q
             log["true_az"][gnss_idx] = true_az
-            d_coeff = coeff_delta_ekf_minus_theory(x_sp, th_vec)
-            log["d_params"][:, gnss_idx] = d_coeff
+            log["u"][:, gnss_idx] = u
+            log["z_nav"][:, gnss_idx] = z
             gnss_idx += 1
 
         # --------------------------------------------------------------
-        # ЭТАП 5. ОФК-2 short-period @ dt_ofk2 (после ОФК-1, если он был)
-        # α,V — hold с последнего ГНСС/ОФК-1; q, az — ДУС/ДЛУ; δe — привод
+        # ЭТАП 5. ОФК-2 short-period @ dt_ofk2 (после первого ОФК-1)
+        # Hoff: α,V,θ из БНК; q,az — ДУС/ДЛУ; δe — привод FX1
         # --------------------------------------------------------------
-        if alpha_hold is not None and (i + 1) % step_ofk2 == 0:
+        if gnss_idx > 0 and (i + 1) % step_ofk2 == 0:
+            alpha_meas, v_meas = reconstruct_alpha_from_nav(np_bins, cbn)
+            theta_meas = reconstruct_theta_from_nav(cbn)
             q_meas = float(w_m[2])
             az_meas = float(a_m[1]) / G0
             de_meas = float(x[16]) * np.pi / 180.0
-            da = float(alpha_hold) - trim["alpha0"]
+            da = float(alpha_meas) - trim["alpha0"]
             dde = de_meas - trim["delta_e0"]
+            dv = float(v_meas) - trim["v0"]
+            dtheta = float(theta_meas) - trim["theta0"]
             if az0 is None:
                 az0 = az_meas
-            z_sp = build_z_kinematics(alpha_hold, q_meas, de_meas, az_meas, trim)
+            z_sp = build_z_kinematics(
+                alpha_meas, q_meas, de_meas, v_meas, theta_meas, az_meas, trim
+            )
+            th_inst_vec = theory_vector(
+                ofk2_jacobian_at_trim(
+                    x, u, la, thetatr=float(sim["thetatr"])
+                )
+            )
             (
                 x_sp,
                 p_sp,
-                delta_sp,
-                a_smooth,
-                a_smooth_prev,
-                q_smooth,
-                q_smooth_prev,
+                innov_sp,
+                innov_prior_sp,
+                innov_std_sp,
+                da_prev,
+                q_prev,
             ) = sp_ekf_step(
                 x_sp,
                 p_sp,
                 da=da,
                 q=q_meas,
                 dde=dde,
+                dv=dv,
+                dtheta=dtheta,
                 az=az_meas,
-                v=float(v_hold),
+                v=float(v_meas),
                 az0=float(az0),
                 dt=dt_ofk2,
-                alpha_smooth=a_smooth,
-                alpha_smooth_prev=a_smooth_prev,
-                q_smooth=q_smooth,
-                q_smooth_prev=q_smooth_prev,
+                da_prev=da_prev,
+                q_prev=q_prev,
             )
-            # на такте ГНСС лог уже записан до шага ОФК-2 — обновить оценки
+            (
+                x_sp_legacy,
+                p_sp_legacy,
+                _innov_sp_legacy,
+                _innov_prior_legacy,
+                _innov_std_legacy,
+                da_prev_legacy,
+                q_prev_legacy,
+            ) = sp_ekf_step_legacy(
+                x_sp_legacy,
+                p_sp_legacy,
+                da=da,
+                q=q_meas,
+                dde=dde,
+                az=az_meas,
+                v=float(v_meas),
+                az0=float(az0),
+                dt=dt_ofk2,
+                da_prev=da_prev_legacy,
+                q_prev=q_prev_legacy,
+            )
+            ofk2_time[ofk2_idx] = t
+            ofk2_params[:, ofk2_idx] = x_sp[:N_PARAM]
+            ofk2_theory[:, ofk2_idx] = th_inst_vec
+            ofk2_std[:, ofk2_idx] = np.sqrt(np.diag(p_sp))
+            ofk2_d_params[:, ofk2_idx] = x_sp[:N_PARAM] - th_inst_vec
+            ofk2_d_params_trim[:, ofk2_idx] = x_sp[:N_PARAM] - th_vec
+            ofk2_legacy_params[:, ofk2_idx] = x_sp_legacy[:N_PARAM_LEGACY]
+            ofk2_legacy_std[:, ofk2_idx] = np.sqrt(np.diag(p_sp_legacy))
+            ofk2_legacy_d_params_trim[:, ofk2_idx] = (
+                x_sp_legacy[:N_PARAM_LEGACY] - th_vec_legacy
+            )
+            ofk2_innov_prior[:, ofk2_idx] = innov_prior_sp
+            ofk2_innov_std[:, ofk2_idx] = innov_std_sp
+            ofk2_reg[:, ofk2_idx] = (da, q_meas, dde, dv, dtheta)
+            ofk2_true_aq[0, ofk2_idx] = -np.arctan2(
+                x[1], x[0] if abs(x[0]) > 1e-9 else 1e-9
+            )
+            ofk2_true_aq[1, ofk2_idx] = x[5]
+            ofk2_true_aq[2, ofk2_idx] = np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2)
+            ofk2_true_aq[3, ofk2_idx] = x[8]
+            ofk2_idx += 1
+            # как ОФК-1: δ и √Pᵢᵢ пишем после шага фильтра на такте ГНСС
             if (i + 1) % step_gnss == 0 and gnss_idx > 0:
                 j = gnss_idx - 1
-                log["sp_params"][:, j] = x_sp[:N_PARAM]
-                log["sp_delta"][:, j] = delta_sp
+                std_sp = np.sqrt(np.diag(p_sp))
                 log["sp_z"][:, j] = z_sp
-                log["d_params"][:, j] = coeff_delta_ekf_minus_theory(x_sp, th_vec)
+                log["sp_delta"][:, j] = innov_sp
+                log["sp_alpha"][j] = alpha_gnss
+                log["sp_q"][j] = q_meas
+                log["sp_de"][j] = de_meas
+                log["sp_az"][j] = az_meas
+                log["sp_params"][:, j] = x_sp[:N_PARAM]
+                log["sp_theory_inst"][:, j] = th_inst_vec
+                log["d_params"][:, j] = coeff_delta_ekf_minus_theory(x_sp, th_inst_vec)
+                log["d_params_trim"][:, j] = coeff_delta_ekf_minus_theory(x_sp, th_vec)
+                log["sp_std"][:, j] = std_sp
+                for k in range(N_PARAM):
+                    log[f"ofk2_std_{PARAM_NAMES[k]}"][j] = std_sp[k]
 
         if i % 20000 == 0:
             v = np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2)
@@ -417,6 +523,23 @@ def run_simulation(
     out["bal"] = np.asarray(sim["bal"], dtype=float).copy()
     out["sp_theory"] = {k: float(v) for k, v in sp_theory.items()}
     out["sp_theory_vec"] = th_vec.copy()
+    out["sp_theory_vec_trim"] = th_vec.copy()
+    out["ofk2_time"] = ofk2_time[:ofk2_idx].copy()
+    out["ofk2_params"] = ofk2_params[:, :ofk2_idx].copy()
+    out["ofk2_theory"] = ofk2_theory[:, :ofk2_idx].copy()
+    out["ofk2_std"] = ofk2_std[:, :ofk2_idx].copy()
+    out["ofk2_d_params"] = ofk2_d_params[:, :ofk2_idx].copy()
+    out["ofk2_d_params_trim"] = ofk2_d_params_trim[:, :ofk2_idx].copy()
+    out["ofk2_legacy_params"] = ofk2_legacy_params[:, :ofk2_idx].copy()
+    out["ofk2_legacy_std"] = ofk2_legacy_std[:, :ofk2_idx].copy()
+    out["ofk2_legacy_d_params_trim"] = ofk2_legacy_d_params_trim[:, :ofk2_idx].copy()
+    out["sp_theory_vec_legacy"] = th_vec_legacy.copy()
+    out["ofk2_innov_prior"] = ofk2_innov_prior[:, :ofk2_idx].copy()
+    out["ofk2_innov_std"] = ofk2_innov_std[:, :ofk2_idx].copy()
+    out["ofk2_reg"] = ofk2_reg[:, :ofk2_idx].copy()
+    out["ofk2_true_aq"] = ofk2_true_aq[:, :ofk2_idx].copy()
+    out["elevator_doublet_amp_deg"] = float(elevator_doublet_amp_deg)
+    out["coeff_start_err"] = float(_coeff_start_err)
     return out
 
 

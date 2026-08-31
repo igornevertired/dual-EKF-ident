@@ -14,8 +14,14 @@ from src.model_python_port.output.full_sim_outputs import (
     plot_latitude_vs_longitude,
     plot_ofk_error_with_posterior_three_sigma,
     plot_ofk2_ekf,
+    plot_ofk2_error_with_posterior_three_sigma,
+    plot_ofk2_error_legacy_three_sigma,
+    plot_ofk2_error_start_vs_end,
     plot_ofk2_params_time,
+    plot_ofk2_params_with_three_sigma,
+    plot_ofk2_theory_drift,
     print_bins_gnss_simulation_tables,
+    print_ofk2_theory_drift_table,
 )
 
 __all__ = [
@@ -40,4 +46,12 @@ if __name__ == "__main__":
     plot_latitude_vs_longitude(data, out_path=plots_dir / "latitude_vs_longitude.png")
     plot_ofk_error_with_posterior_three_sigma(data, out_dir=plots_dir)
     plot_ofk2_params_time(data, out_path=plots_dir / "ofk2_params_time.png")
+    plot_ofk2_params_with_three_sigma(
+        data, out_path=plots_dir / "ofk2_params_three_sigma.png"
+    )
+    plot_ofk2_error_with_posterior_three_sigma(data, out_dir=plots_dir)
+    plot_ofk2_error_legacy_three_sigma(data, out_dir=plots_dir)
+    plot_ofk2_error_start_vs_end(data, out_path=plots_dir / "ofk2_error_start_end.png")
+    plot_ofk2_theory_drift(data, out_path=plots_dir / "ofk2_theory_drift.png")
+    print_ofk2_theory_drift_table(data)
     plot_ofk2_ekf(data, out_path=plots_dir / "ofk2_ekf.png")
