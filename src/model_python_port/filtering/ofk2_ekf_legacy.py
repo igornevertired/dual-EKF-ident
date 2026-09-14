@@ -29,13 +29,15 @@ def initial_covariance(
     param0: np.ndarray | None = None,
     *,
     coeff_start_err: float = 0.3,
+    scale_ref: np.ndarray | None = None,
 ) -> np.ndarray:
     abs_floor = np.array([0.05, 0.05, 0.02, 0.05, 0.05, 0.05], dtype=float)
-    if param0 is None:
+    if param0 is None and scale_ref is None:
         sig = np.array([0.30, 0.10, 0.20, 0.30, 0.30, 0.30], dtype=float)
     else:
-        p0 = np.asarray(param0, dtype=float).reshape(N_STATE)
-        sig = np.maximum(np.abs(p0) * float(coeff_start_err) / 3.0, abs_floor * 0.2)
+        ref = scale_ref if scale_ref is not None else param0
+        ref = np.asarray(ref, dtype=float).reshape(N_STATE)
+        sig = np.maximum(np.abs(ref) * float(coeff_start_err) / 3.0, abs_floor * 0.2)
     return np.diag(sig**2)
 
 

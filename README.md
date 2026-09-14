@@ -206,3 +206,5 @@ python run_full_sim.py
 - [Начальные значения и ошибки](docs/SIMULATION_INITIAL_VALUES_AND_ERRORS.md)
 - [Математическая модель ЛА](docs/MATHEMATICAL_MODEL_AIRCRAFT.md)
 - [EKF уравнения](docs/EKF1_NAVIGATION_EQUATIONS.docx)
+- [Отчёт: модели, алгоритмы, результаты](docs/Отчёт_имитационное_моделирование.docx) — сборка: `docs/build_report_figures.py` → `docs/_report_stats.py` → `docs/build_report_docx.py`
+- [Модели и алгоритмы (расширенная версия с формулами)](docs/Отчет_модели_и_алгоритмы_дополненный.docx) — сборка: `docs/build_report_models_docx.py`

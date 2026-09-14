@@ -39,25 +39,35 @@ def initial_covariance(
     param0: np.ndarray | None = None,
     *,
     coeff_start_err: float = 0.3,
+    scale_ref: np.ndarray | None = None,
 ) -> np.ndarray:
-    """P₀: 3σ покрывает начальное смещение ``coeff_start_err·|θ|``."""
+    """P₀: 3σ покрывает ``coeff_start_err·|scale_ref|``.
+
+    ``scale_ref`` — масштаб истинных коэффициентов (эталон балансировки),
+    не стартовая догадка: иначе при малом θ̂(0) полоса схлопывается.
+    """
     abs_floor = np.array(
         [0.05, 0.05, 0.02, 0.01, 0.01, 0.05, 0.05, 0.05, 0.01, 0.01],
         dtype=float,
     )
-    if param0 is None:
+    if param0 is None and scale_ref is None:
         sig = np.array(
             [0.30, 0.10, 0.20, 0.05, 0.05, 0.30, 0.30, 0.30, 0.05, 0.05],
             dtype=float,
         )
     else:
-        p0 = np.asarray(param0, dtype=float).reshape(N_STATE)
-        sig = np.maximum(np.abs(p0) * float(coeff_start_err) / 3.0, abs_floor * 0.2)
+        ref = scale_ref if scale_ref is not None else param0
+        ref = np.asarray(ref, dtype=float).reshape(N_STATE)
+        sig = np.maximum(np.abs(ref) * float(coeff_start_err) / 3.0, abs_floor * 0.2)
     return np.diag(sig**2)
 
 
-def process_noise(dt: float, *, adapt: bool) -> np.ndarray:
-    return np.zeros((N_STATE, N_STATE), dtype=float)
+def process_noise(dt: float, *, adapt: bool, q_std: float = 0.0) -> np.ndarray:
+    """Дискретная Q. q_std=0 — постоянные коэффициенты (P только сжимается)."""
+    q = float(q_std)
+    if q <= 0.0:
+        return np.zeros((N_STATE, N_STATE), dtype=float)
+    return np.eye(N_STATE, dtype=float) * (q * q)
 
 
 def measurement_covariance(
@@ -166,6 +176,7 @@ def ekf_step(
     da_prev: float | None,
     q_prev: float | None,
     r: np.ndarray | None = None,
+    q_std: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
     x = np.asarray(x, dtype=float).reshape(N_STATE)
     p = np.asarray(p, dtype=float)
@@ -177,7 +188,7 @@ def ekf_step(
         r = measurement_covariance()
 
     adapt = _has_excitation(da, q, dde, dv, dtheta)
-    p_pred = p + process_noise(dt, adapt=adapt)
+    p_pred = p + process_noise(dt, adapt=adapt, q_std=q_std)
     p_pred = 0.5 * (p_pred + p_pred.T)
     x_pred = x.copy()
     innov_post = np.zeros(N_MEAS, dtype=float)

@@ -79,6 +79,13 @@ def run_simulation(
     dt_gnss: float = 0.1,
     dt_ofk2: float = 0.02,
     elevator_doublet_amp_deg: float = 5.0,
+    ofk1_feedback: bool = True,
+    coeff_start_err: float = 0.3,
+    ofk2_start_scale: float | None = None,
+    ofk2_q_std: float = 0.0,
+    elevator_extra_t0: tuple[float, ...] = (),
+    aero_step_t: float | None = None,
+    aero_step_scale: dict[int, float] | None = None,
 ):
     # ------------------------------------------------------------------
     # Манёвр руля высоты внутри автопилота (канал δV на интервале заморожен).
@@ -88,7 +95,8 @@ def run_simulation(
     # ------------------------------------------------------------------
 
     sim = initsim()
-    la = sim["la"]
+    la = dict(sim["la"])
+    la["PAR"] = np.asarray(sim["la"]["PAR"], dtype=float).copy()
     htr, vtr, tettr = sim["htr"], sim["vtr"], sim["tettr"]
     ivk = sim["ivk"]
 
@@ -139,15 +147,22 @@ def run_simulation(
         "v0": float(sp_theory["v0"]),
         "theta0": float(sp_theory["theta0"]),
     }
-    # ОФК-2: [Lα,Lq,Lδe,Mα,Mq,Mδe] со смещением от теории (без theory-anchor)
-    _coeff_start_err = 0.3
-    param0 = th_vec * (1.0 + _coeff_start_err)
+    # ОФК-2: старт от эталона балансировки (без theory-anchor)
+    _coeff_start_err = float(coeff_start_err)
+    if ofk2_start_scale is None:
+        _scale = 1.0 + _coeff_start_err
+    else:
+        _scale = float(ofk2_start_scale)
+        _coeff_start_err = abs(_scale - 1.0)
+    param0 = th_vec * _scale
+    param0_legacy = th_vec_legacy * _scale
     x_sp = sp_initial_state(param0)
-    p_sp = sp_initial_covariance(param0, coeff_start_err=_coeff_start_err)
-    param0_legacy = th_vec_legacy * (1.0 + _coeff_start_err)
+    p_sp = sp_initial_covariance(
+        param0, coeff_start_err=_coeff_start_err, scale_ref=th_vec
+    )
     x_sp_legacy = sp_initial_state_legacy(param0_legacy)
     p_sp_legacy = sp_initial_covariance_legacy(
-        param0_legacy, coeff_start_err=_coeff_start_err
+        param0_legacy, coeff_start_err=_coeff_start_err, scale_ref=th_vec_legacy
     )
     da_prev: float | None = None
     q_prev: float | None = None
@@ -249,9 +264,19 @@ def run_simulation(
     ap_steps = int(0.01 / dt)
     gnss_idx = 0
     a_last = np.zeros(3, dtype=float)
+    aero_applied = False
+    aero_scale = aero_step_scale or {7: 1.4, 20: 1.4, 22: 1.4}
 
     for i in range(n_steps):
         t = (i + 1) * dt
+        if (
+            aero_step_t is not None
+            and not aero_applied
+            and t >= float(aero_step_t)
+        ):
+            for idx, k in aero_scale.items():
+                la["PAR"][int(idx)] *= float(k)
+            aero_applied = True
         # --------------------------------------------------------------
         # ЭТАП 1. Модель полёта FX1 → «идеальные» выходы инерциальных датчиков
         # --------------------------------------------------------------
@@ -281,6 +306,7 @@ def run_simulation(
                 tettr,
                 elevator_maneuver=ELEVATOR_MANEUVER,
                 elevator_doublet_amp_deg=float(elevator_doublet_amp_deg),
+                elevator_extra_t0=tuple(elevator_extra_t0),
             )
 
         # --------------------------------------------------------------
@@ -312,7 +338,7 @@ def run_simulation(
             )
 
             # Первый такт: грубое выравнивание БИНС по ГНСС (скорости + высота)
-            if gnss_idx == 0:
+            if ofk1_feedback and gnss_idx == 0:
                 np_bins[0] = np_gnss[3]  # Vn
                 np_bins[2] = np_gnss[4]  # Ve
                 np_bins[1] = np_gnss[5]  # Vh
@@ -326,8 +352,9 @@ def run_simulation(
             x_ofk, p_ofk = ofk_step(
                 a_last, cbn, np_bins, z, x_ofk, p_ofk, v_gnss, dt_gnss
             )
-            apply_bins_feedback(np_bins, x_ofk)
-            x_ofk[:] = 0.0  # error-state reset после обратной связи
+            if ofk1_feedback:
+                apply_bins_feedback(np_bins, x_ofk)
+                x_ofk[:] = 0.0  # error-state reset после обратной связи
 
             # α, V для лога ГНСС (на такте ОФК-2 ниже — каждый шаг 50 Гц)
             alpha_gnss, v_gnss_sp = reconstruct_alpha_from_nav(np_bins, cbn)
@@ -447,6 +474,7 @@ def run_simulation(
                 dt=dt_ofk2,
                 da_prev=da_prev,
                 q_prev=q_prev,
+                q_std=float(ofk2_q_std),
             )
             (
                 x_sp_legacy,
@@ -540,6 +568,12 @@ def run_simulation(
     out["ofk2_true_aq"] = ofk2_true_aq[:, :ofk2_idx].copy()
     out["elevator_doublet_amp_deg"] = float(elevator_doublet_amp_deg)
     out["coeff_start_err"] = float(_coeff_start_err)
+    out["ofk2_start_scale"] = (
+        None if ofk2_start_scale is None else float(ofk2_start_scale)
+    )
+    out["ofk2_q_std"] = float(ofk2_q_std)
+    out["aero_step_t"] = None if aero_step_t is None else float(aero_step_t)
+    out["ofk1_feedback"] = bool(ofk1_feedback)
     return out
 
 
