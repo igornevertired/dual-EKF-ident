@@ -110,8 +110,8 @@ def plot_bins_gnss_trajectory_dashboard(data, out_path=None):
 
     Кривые:
       истина FX1 — эталон траектории;
-      БИНС до ОФК — механизация на такте ГНСС до коррекции;
-      БИНС после ОФК-1 — тот же вектор после обратной связи фильтра;
+      БИНС — автономное счисление по сырым ДУС/ДЛУ;
+      ОФК-1 (потребитель) — NP минус ошибки фильтра, в БИНС не пишется;
       ГНСС — измерения PVT (точки).
 
     Ошибки ``оценка − истина`` и ±3σ — на ``ofk_error_vs_three_sigma_P.png``.
@@ -133,8 +133,8 @@ def plot_bins_gnss_trajectory_dashboard(data, out_path=None):
 
     # Единые подписи легенды для всех панелей
     lbl_true = "истина FX1"
-    lbl_bins = "БИНС до ОФК"
-    lbl_ofk = "БИНС после ОФК-1"
+    lbl_bins = "БИНС (автономный)"
+    lbl_ofk = "ОФК-1 (потребитель)"
     lbl_gnss = "ГНСС (измерение)"
 
     def add_gnss(ax, t_m, y_meas, mask):
@@ -192,7 +192,7 @@ def plot_ofk_error_with_posterior_three_sigma(data, out_dir=None, *, out_path=No
     Ошибки навигации: δ = (БИНС) − (истина FX1)
     на тактах ГНСС; полосы ±3√Pᵢᵢ апостериори ОФК-1.
 
-    error_from: ``ofk`` — после обратной связи; ``bins`` — до коррекции (автономный дрейф).
+    error_from: ``ofk`` — выход ОФК-1 потребителю; ``bins`` — автономный БИНС.
     """
     t = np.asarray(data["time"], dtype=float)
     fi0 = float(np.asarray(data["true_fi"], dtype=float)[0])
@@ -204,13 +204,13 @@ def plot_ofk_error_with_posterior_three_sigma(data, out_dir=None, *, out_path=No
             "err_bins_fi", "err_bins_lam", "err_bins_h",
             "err_bins_vn", "err_bins_ve", "err_bins_vh",
         )
-        line_label = r"ошибка: (БИНС без ОС) $-$ истина FX1"
+        line_label = r"ошибка: (автономный БИНС) $-$ истина FX1"
     else:
         err_keys = (
             "err_ofk_fi", "err_ofk_lam", "err_ofk_h",
             "err_ofk_vn", "err_ofk_ve", "err_ofk_vh",
         )
-        line_label = r"ошибка: (БИНС после ОФК-1) $-$ истина FX1"
+        line_label = r"ошибка: (ОФК-1, потребитель) $-$ истина FX1"
 
     defs = (
         (r"$\delta N$", "м", data[err_keys[0]], data["ofk_std_fi"], lambda x: np.asarray(x) * rn),
@@ -312,7 +312,7 @@ def print_bins_gnss_simulation_tables(data):
               f"{data['true_vn'][i]:8.2f}  {data['true_ve'][i]:8.2f}")
 
     print(f"\n{'='*110}")
-    print("ЛОГ: БИНС до коррекции ОФК (на тактах ГНСС)")
+    print("ЛОГ: автономный БИНС (на тактах ГНСС)")
     print(f"{'='*110}")
     print(f"{'Time':>6s}  {'H':>8s}  {'dH':>6s}  {'Fi(°)':>10s}  {'dFi_bins':>10s}  {'Vn':>8s}  {'dVn_bins':>10s}")
     print("-" * 110)
@@ -322,7 +322,7 @@ def print_bins_gnss_simulation_tables(data):
               f"{data['bins_vn'][i]:8.2f}  {data['err_bins_vn'][i]:10.3f}")
 
     print(f"\n{'='*110}")
-    print("ЛОГ: навигация после коррекции ОФК")
+    print("ЛОГ: выход ОФК-1 для потребителей")
     print(f"{'='*110}")
     print(f"{'Time':>6s}  {'Fi(°)':>10s}  {'dFi_ofk':>10s}  {'Vn':>8s}  {'dVn_ofk':>10s}")
     print("-" * 110)
@@ -807,7 +807,8 @@ def plot_ofk2_ekf(data, out_path=None):
 
     axes[2, 0].plot(t, data["sp_delta"][0], label=r"$\delta_{\dot\alpha}$")
     axes[2, 0].plot(t, data["sp_delta"][1], label=r"$\delta_{\dot q}$")
-    axes[2, 0].plot(t, data["sp_delta"][2], label=r"$\delta_{az}$")
+    axes[2, 0].plot(t, data["sp_delta"][2], label=r"$\delta_{\dot V}$")
+    axes[2, 0].plot(t, data["sp_delta"][3], label=r"$\delta_{az}$")
     axes[2, 0].set_title("Невязки equation-error")
     axes[2, 0].legend(fontsize=8)
     axes[2, 0].grid(True, alpha=0.3)
@@ -836,7 +837,7 @@ def plot_ofk2_ic_sweep(runs: list[dict], out_path=None):
     ncols = 2
     nrows = int(np.ceil(n / ncols))
     labels = [_ic_label(run) for run in runs]
-    fig = plt.figure(figsize=(12, 2.35 * nrows + 4.6))
+    fig = plt.figure(figsize=(16, 2.35 * nrows + 5.0))
     gs = fig.add_gridspec(
         nrows + 2,
         ncols,
@@ -883,7 +884,7 @@ def plot_ofk2_ic_sweep(runs: list[dict], out_path=None):
         ax.set_ylabel(name)
         ax.set_title(name)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=6, loc="best")
+        ax.legend(fontsize=5.5, loc="best", ncol=2)
         if k >= n - ncols:
             ax.set_xlabel("Время (с)")
 
@@ -914,7 +915,7 @@ def plot_ofk2_ic_sweep(runs: list[dict], out_path=None):
             )
             p0 = _start_pct(run)
             p1 = _end_pct(err, pi)
-            row.append(f"{p0:.0f} %  →  {p1:.1f} %")
+            row.append(f"{p0:.0f}→{p1:.1f}")
             bits.append(f"{p0:.0f}→{p1:.1f}")
         cell.append(row)
         print(f"  {name}: " + "  ".join(bits))
@@ -926,7 +927,7 @@ def plot_ofk2_ic_sweep(runs: list[dict], out_path=None):
         bbox=[0.0, 0.05, 1.0, 0.95],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
+    table.set_fontsize(7)
 
     fig.suptitle(
         "ОФК-2: разные начальные значения. Сверху — коэффициент во времени, "
@@ -956,7 +957,7 @@ def plot_ofk2_ic_error_three_sigma(runs: list[dict], out_path=None):
     fig, axes = plt.subplots(
         n_par,
         n_ic,
-        figsize=(3.2 * n_ic, 1.55 * n_par),
+        figsize=(max(3.0 * n_ic, 10), 1.55 * n_par),
         sharex=True,
         squeeze=False,
     )
@@ -988,5 +989,50 @@ def plot_ofk2_ic_error_three_sigma(runs: list[dict], out_path=None):
     )
     plt.tight_layout(rect=(0, 0, 1, 0.97))
     plt.savefig(path, dpi=140)
+    plt.close(fig)
+    print(f"\nPlot saved to {path}")
+
+
+def plot_ofk2_rate_compare(runs: list[tuple[str, dict]], out_path=None):
+    """Сравнение ОФК-2 при разном dt_ofk2 (один полёт, один старт)."""
+    from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
+
+    path = Path(out_path or "ofk2_rate_compare.png")
+    n = len(REPORT_PARAM_NAMES)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 2.5 * nrows), sharex=True)
+    axes_flat = np.atleast_1d(axes).ravel()
+    th_trim = np.asarray(runs[0][1].get("sp_theory_vec_trim", []), dtype=float)
+
+    print("ОФК-2: частота vs |Δ|/|trim| на t_end")
+    for ax, pi, name in zip(axes_flat, REPORT_PARAM_INDICES, REPORT_PARAM_NAMES):
+        if th_trim.size > pi:
+            ax.axhline(th_trim[pi], color="k", lw=1.2, label="эталон trim")
+        for lab, run in runs:
+            t = np.asarray(run["ofk2_time"], dtype=float)
+            ekf = np.asarray(run["ofk2_params"], dtype=float)
+            ax.plot(t, ekf[pi], lw=1.3, label=lab)
+        ax.set_ylabel(name)
+        ax.set_title(name)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7, loc="best")
+    for j in range(n, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+    for ax in axes_flat[max(0, n - ncols) : n]:
+        ax.set_xlabel("Время (с)")
+
+    for lab, run in runs:
+        err = np.asarray(run.get("ofk2_d_params_trim", run["ofk2_d_params"]))
+        bits = []
+        for i, pi in enumerate(REPORT_PARAM_INDICES):
+            den = max(abs(float(th_trim[pi])), 1e-12)
+            bits.append(f"{REPORT_PARAM_NAMES[i]}={100*abs(err[pi,-1])/den:.1f}%")
+        mae = float(np.mean(np.abs(err[REPORT_PARAM_INDICES, -1])))
+        print(f"  {lab}: MAE={mae:.4f}  " + "  ".join(bits))
+
+    fig.suptitle("ОФК-2: один и тот же полёт, разная частота фильтра", fontsize=12)
+    fig.tight_layout()
+    plt.savefig(path, dpi=150)
     plt.close(fig)
     print(f"\nPlot saved to {path}")

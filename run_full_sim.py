@@ -32,7 +32,7 @@ if __name__ == "__main__":
     print("Запуск симуляции БИНС + ГНСС + ОФК-1 + ОФК-2...")
     plots_dir = Path("src/plots")
     plots_dir.mkdir(parents=True, exist_ok=True)
-    data = run_simulation(tmodel=60.0, dt=1e-3, dt_gnss=0.1, dt_ofk2=0.02)
+    data = run_simulation(tmodel=120.0, dt=1e-3, dt_gnss=0.1, dt_ofk2=0.02)
     print(f"\nСимуляция завершена: {len(data['time'])} точек лога")
     print_bins_gnss_simulation_tables(data)
     plot_bins_gnss_trajectory_dashboard(data, out_path=plots_dir / "bins_gnss_full.png")
@@ -41,8 +41,9 @@ if __name__ == "__main__":
     plot_ofk2_error_with_posterior_three_sigma(data, out_dir=plots_dir)
 
     print("\nОФК-2: разброс начальных условий...")
+    ic_scales = tuple(round(0.2 * i, 1) for i in range(1, 11))
     ic_runs = []
-    for scale in (0.2, 0.5, 1.3, 2.0, 3.0):
+    for scale in ic_scales:
         print(f"  старт ×{scale}")
         ic_runs.append(
             run_simulation(

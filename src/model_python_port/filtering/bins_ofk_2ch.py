@@ -2,7 +2,7 @@
 Поблочный перенос ``BINS_OFK_2ch.m`` (линеаризованная модель ошибок БИНС для ОФК).
 
 Состояние ``X`` размерности **13** в порядке столбцов матрицы ``F`` из MATLAB (см. комментарии
-внутри ``build_bins_ofk_2ch_matrices``). Измерений — **4** (Fi, λ, Vn, Ve), как в ``MODELING_1.m``.
+внутри ``build_bins_ofk_2ch_matrices``). Измерений — **4** (φ, λ, Vn, Ve), как в ``MODELING_1.m``.
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def build_bins_ofk_6ch_matrices(
     dt_nav: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Матрицы ОФК для **6** измерений ГНСС: Fi, Lm, Vn, Ve, Vh, H.
+    Матрицы ОФК для **6** измерений ГНСС: φ, λ, Vn, Ve, Vh, h.
 
     Состояние **15**: первые 13 — ``BINS_OFK_2ch.m``, индексы 13–14 — ошибки
     вертикальной скорости ``np_bins[1]`` и высоты ``np_bins[3]``.
@@ -193,13 +193,29 @@ def build_bins_ofk_6ch_matrices(
     n_vec = c2 @ np.asarray(a_body_b, dtype=float).reshape(3)
     nx, ny, nz = float(n_vec[0]), float(n_vec[1]), float(n_vec[2])
 
+    alt = float(np_bins[3])
+    fi = float(np_bins[4])
+    lm = float(np_bins[5])
+    vn = float(np_bins[0])
+    ve = float(np_bins[2])
+    gg, rn_m, re_m, _gtg = earthmodel(alt, fi, lm)
+    ue = 7292115.0e-11
+    g_up = float(gg[1])
+
     f15 = np.zeros((15, 15), dtype=float)
     f15[:13, :13] = f13
-    # Вертикальный канал: δVh от ошибок ориентации и смещения ДЛУ; δh = ∫δVh.
-    # Без связи с Vn/Ve/φ — иначе через P кросс-термы портят горизонтальные каналы.
+    # Вертикаль из механизации _navigation (Vh вверх):
+    # δV̇_h: ориентация, ДЛУ, кориолис/перенос от δVn,δVe,δφ, гравитация от δh.
     f15[13, 0:3] = np.array([ny, -nx, 0.0], dtype=float)
-    f15[13, 10:13] = c2[2, :]
+    f15[13, 3] = 2.0 * vn / re_m
+    f15[13, 4] = 2.0 * ve / rn_m + 2.0 * ue * np.cos(fi)
+    f15[13, 5] = -2.0 * ue * np.sin(fi) * ve
+    f15[13, 7:10] = c2[2, :]
+    f15[13, 14] = 2.0 * abs(g_up) / rn_m
     f15[14, 13] = 1.0
+    # Обратная связь: δVh в горизонтальные ускорения (перенос).
+    f15[3, 13] = -vn / re_m
+    f15[4, 13] = -ve / rn_m
 
     g15 = np.zeros((15, 6), dtype=float)
     g15[:13, :] = g13

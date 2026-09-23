@@ -103,16 +103,17 @@ def gnss(
     vn: float,
     ve: float,
     vh: float,
-    sigma_fi: float = 5.0e-6,
-    sigma_lm: float = 5.0e-6,
-    sigma_h: float = 1.0,
-    sigma_vn: float = 0.2,
-    sigma_ve: float = 0.2,
-    sigma_vh: float = 0.2,
+    sigma_fi: float = 6.6 / 6378245.0,  # табл. 2: σ_ρ = 6.6 м → рад
+    sigma_lm: float = 6.6 / 6378245.0,
+    sigma_h: float = 6.6,
+    sigma_vn: float = 0.05,  # табл. 2: σ_ρ̇
+    sigma_ve: float = 0.05,
+    sigma_vh: float = 0.05,
     rng=None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Зашумлённые измерения ГНСС ``[Fi, Lm, H, Vn, Ve, Vh]``.
+    Зашумлённые измерения ГНСС ``[φ, λ, h, Vn, Ve, Vh]``.
+    СКО по умолчанию — табл. 2 (псевдодальность 6.6 м, псевдоскорость 0.05 м/с).
 
     Возвращает ``(np_gnss, v_gnss)`` — вектор измерений и СКО по каналам.
     """

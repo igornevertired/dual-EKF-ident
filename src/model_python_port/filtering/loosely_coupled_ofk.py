@@ -1,5 +1,9 @@
 """
-Разомкнутая связка БИНС/ГНСС: predict/update ОФК и обратная связь в ``np_bins``.
+Связка БИНС/ГНСС: error-state ОФК-1.
+
+БИНС считает скорость, координаты и ``Cbn`` по сырым ДУС/ДЛУ.
+Оценки ОФК-1 в механизацию не возвращаются: ``correct_nav_output`` и
+``correct_gyro_output`` — только выход для потребителей (ОФК-2, индикация).
 """
 
 from __future__ import annotations
@@ -93,10 +97,21 @@ def ofk_step(
     return kf_update(h, r, x_pred, p_pred, z)
 
 
-def apply_bins_feedback(np_bins: np.ndarray, x_corr: np.ndarray) -> None:
-    np_bins[0] -= x_corr[3]
-    np_bins[2] -= x_corr[4]
-    np_bins[4] -= x_corr[5]
-    np_bins[5] -= x_corr[6]
-    np_bins[1] -= x_corr[13]
-    np_bins[3] -= x_corr[14]
+def correct_nav_output(np_bins: np.ndarray, x_corr: np.ndarray) -> np.ndarray:
+    """NP для потребителей: счисление БИНС минус δV, δφ, δλ, δh ОФК-1."""
+    x = np.asarray(x_corr, dtype=float).reshape(-1)
+    out = np.asarray(np_bins, dtype=float).reshape(-1).copy()
+    out[0] -= x[3]
+    out[2] -= x[4]
+    out[4] -= x[5]
+    out[5] -= x[6]
+    out[1] -= x[13]
+    out[3] -= x[14]
+    return out
+
+
+def correct_gyro_output(w_m: np.ndarray, x_corr: np.ndarray) -> np.ndarray:
+    """ω для потребителей: ДУС минус оценка смещения ОФК-1. В БИНС не идёт."""
+    return np.asarray(w_m, dtype=float).reshape(3) - np.asarray(
+        x_corr[10:13], dtype=float
+    )

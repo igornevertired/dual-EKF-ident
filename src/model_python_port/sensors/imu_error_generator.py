@@ -8,7 +8,7 @@
 
 K — диагональ погрешностей масштабных коэффициентов,
 Φ — матрица неортогональности осей (как fiw_1 / fia_1).
-Bias и белый шум — как в текущем контуре (не SIGW0/SIGA0 MATLAB).
+Bias ДУС/ДЛУ — табл. 3: 0.003 °/ч и 25 µg. Белый шум — как в контуре.
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ class InsErrorGen:
 
     def __init__(self, seed: int = 42):
         rng = np.random.default_rng(seed)
-        self.dw_bias = rng.normal(0.0, 0.5 * _DEG_HR, 3)
-        self.da_bias = rng.normal(0.0, 5.0e-4, 3)
+        self.dw_bias = rng.normal(0.0, 0.003 * _DEG_HR, 3)  # табл. 3
+        self.da_bias = rng.normal(0.0, 25.0e-6 * 9.80665, 3)  # 25 µg
         self.kmw = _diag_scale(rng, _SIGKMW)
         self.kma = _diag_scale(rng, _SIGKMA)
         self.fiw = _misalignment(rng, _SIGFIW)

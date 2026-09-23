@@ -1,14 +1,17 @@
 """
-ОФК-2: короткопериодическая продольная модель, L* и M*.
-
-Уравнения (приращения от trim)::
+ОФК-2: продольная модель, 5 ДУ. Идентификация L*, M*, X*.
 
     α̇ = Lα·δα + Lq·q + Lδe·δδe + Lv·δV + Lθ·δθ
     q̇ = Mα·δα + Mq·q + Mδe·δδe + Mv·δV + Mθ·δθ
+    V̇ = Xα·δα + Xq·q + Xδe·δδe + Xv·δV + Xθ·δθ
+    θ̇ = q
+    ḣ = V sin(θ−α)
+
     az ≈ az0 − (V/g)·(Lα·δα + (Lq−1)·q + Lδe·δδe + Lv·δV + Lθ·δθ)
 
-Состояние: x = [Lα…Lθ, Mα…Mθ]  (10 коэфф.)
-Z = [α̇_fd, q̇_fd, az]
+Состояние: x = [Lα…Lθ, Mα…Mθ, Xα…Xθ]  (15 коэфф.)
+Z = [α̇_fd, q̇_fd, V̇_fd, az]
+θ̇ и ḣ — кинематика (известны), в оценку коэффициентов не входят.
 """
 
 from __future__ import annotations
@@ -20,8 +23,10 @@ from .ofk2_theory import N_REG, PARAM_NAMES
 
 N_PARAM = len(PARAM_NAMES)
 N_STATE = N_PARAM
-N_MEAS = 3
+N_MEAS = 4
 N_L = N_REG
+N_M = N_REG
+N_X = N_REG
 G0 = 9.80665
 
 _EXC_DDE = 0.003
@@ -47,12 +52,20 @@ def initial_covariance(
     не стартовая догадка: иначе при малом θ̂(0) полоса схлопывается.
     """
     abs_floor = np.array(
-        [0.05, 0.05, 0.02, 0.01, 0.01, 0.05, 0.05, 0.05, 0.01, 0.01],
+        [
+            0.05, 0.05, 0.02, 0.01, 0.01,
+            0.05, 0.05, 0.05, 0.01, 0.01,
+            0.05, 0.05, 0.02, 0.01, 0.01,
+        ],
         dtype=float,
     )
     if param0 is None and scale_ref is None:
         sig = np.array(
-            [0.30, 0.10, 0.20, 0.05, 0.05, 0.30, 0.30, 0.30, 0.05, 0.05],
+            [
+                0.30, 0.10, 0.20, 0.05, 0.05,
+                0.30, 0.30, 0.30, 0.05, 0.05,
+                0.30, 0.10, 0.20, 0.05, 0.05,
+            ],
             dtype=float,
         )
     else:
@@ -73,9 +86,12 @@ def process_noise(dt: float, *, adapt: bool, q_std: float = 0.0) -> np.ndarray:
 def measurement_covariance(
     sigma_adot: float = 0.025,
     sigma_qdot: float = 0.002,
+    sigma_vdot: float = 0.15,
     sigma_az: float = 0.023,
 ) -> np.ndarray:
-    return np.diag(np.array([sigma_adot, sigma_qdot, sigma_az], dtype=float) ** 2)
+    return np.diag(
+        np.array([sigma_adot, sigma_qdot, sigma_vdot, sigma_az], dtype=float) ** 2
+    )
 
 
 def _has_excitation(
@@ -143,6 +159,21 @@ def build_z_kinematics(
     return np.array([*reg, float(az)], dtype=float)
 
 
+def long_kinematics(
+    da: float,
+    q: float,
+    dv: float,
+    dtheta: float,
+    *,
+    v0: float,
+    gamma0: float,
+) -> tuple[float, float]:
+    """θ̇ = q,  ḣ = V sin(θ−α) в приращениях от trim."""
+    theta_dot = float(q)
+    h_dot = float(v0 * np.cos(gamma0) * (dtheta - da) + np.sin(gamma0) * dv)
+    return theta_dot, h_dot
+
+
 def _predict_z(
     coeffs: np.ndarray,
     phi: np.ndarray,
@@ -151,13 +182,15 @@ def _predict_z(
     az0: float,
 ) -> np.ndarray:
     l = coeffs[:N_L]
-    m = coeffs[N_L:]
+    m = coeffs[N_L : N_L + N_M]
+    xx = coeffs[N_L + N_M :]
     alpha_dot = float(l @ phi)
     qdot = float(m @ phi)
+    vdot = float(xx @ phi)
     az = float(az0) - (v / G0) * (
         l[0] * phi[0] + (l[1] - 1.0) * phi[1] + l[2] * phi[2] + l[3] * phi[3] + l[4] * phi[4]
     )
-    return np.array([alpha_dot, qdot, az], dtype=float)
+    return np.array([alpha_dot, qdot, vdot, az], dtype=float)
 
 
 def ekf_step(
@@ -175,6 +208,7 @@ def ekf_step(
     dt: float,
     da_prev: float | None,
     q_prev: float | None,
+    v_prev: float | None = None,
     r: np.ndarray | None = None,
     q_std: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
@@ -195,21 +229,23 @@ def ekf_step(
     innov_prior = np.full(N_MEAS, np.nan, dtype=float)
     sqrt_s = np.full(N_MEAS, np.nan, dtype=float)
 
-    if da_prev is None or q_prev is None or dt <= 0.0 or not adapt:
+    if da_prev is None or q_prev is None or v_prev is None or dt <= 0.0 or not adapt:
         return x_pred, p_pred, innov_post, innov_prior, sqrt_s, da, q
 
     adot = (da - float(da_prev)) / dt
     qdot = (q - float(q_prev)) / dt
+    vdot = (v - float(v_prev)) / dt
     phi = np.array([da, q, dde, dv, dtheta], dtype=float)
 
     z_pred = _predict_z(x_pred, phi, v=v, az0=az0)
-    z = np.array([adot, qdot, az], dtype=float)
+    z = np.array([adot, qdot, vdot, az], dtype=float)
 
     h = np.zeros((N_MEAS, N_STATE), dtype=float)
     h[0, :N_L] = phi
-    h[1, N_L:] = phi
+    h[1, N_L : N_L + N_M] = phi
+    h[2, N_L + N_M :] = phi
     k_az = -(v / G0)
-    h[2, :N_L] = k_az * phi
+    h[3, :N_L] = k_az * phi
 
     delta = z - z_pred
     ph_t = p_pred @ h.T
