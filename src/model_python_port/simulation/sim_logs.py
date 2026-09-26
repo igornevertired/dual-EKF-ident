@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 
 from ..filtering.ofk2_ekf import N_MEAS, N_PARAM
-from ..filtering.ofk2_ekf_legacy import N_PARAM as N_PARAM_LEGACY
 from ..filtering.ofk2_theory import PARAM_NAMES, coeff_delta_ekf_minus_theory
 
 
@@ -92,9 +91,6 @@ class SimLogs:
         self.ofk2_std = np.zeros((N_PARAM, n))
         self.ofk2_d_params = np.zeros((N_PARAM, n))
         self.ofk2_d_params_trim = np.zeros((N_PARAM, n))
-        self.ofk2_legacy_params = np.zeros((N_PARAM_LEGACY, n))
-        self.ofk2_legacy_std = np.zeros((N_PARAM_LEGACY, n))
-        self.ofk2_legacy_d_params_trim = np.zeros((N_PARAM_LEGACY, n))
         self.ofk2_innov_prior = np.full((N_MEAS, n), np.nan)
         self.ofk2_innov_std = np.full((N_MEAS, n), np.nan)
         self.ofk2_reg = np.zeros((5, n))
@@ -179,9 +175,6 @@ class SimLogs:
         p_sp: np.ndarray,
         th_inst_vec: np.ndarray,
         th_vec: np.ndarray,
-        x_sp_legacy: np.ndarray,
-        p_sp_legacy: np.ndarray,
-        th_vec_legacy: np.ndarray,
         innov_prior_sp: np.ndarray,
         innov_std_sp: np.ndarray,
         da: float,
@@ -197,11 +190,6 @@ class SimLogs:
         self.ofk2_std[:, k] = np.sqrt(np.diag(p_sp))
         self.ofk2_d_params[:, k] = x_sp[:N_PARAM] - th_inst_vec
         self.ofk2_d_params_trim[:, k] = x_sp[:N_PARAM] - th_vec
-        self.ofk2_legacy_params[:, k] = x_sp_legacy[:N_PARAM_LEGACY]
-        self.ofk2_legacy_std[:, k] = np.sqrt(np.diag(p_sp_legacy))
-        self.ofk2_legacy_d_params_trim[:, k] = (
-            x_sp_legacy[:N_PARAM_LEGACY] - th_vec_legacy
-        )
         self.ofk2_innov_prior[:, k] = innov_prior_sp
         self.ofk2_innov_std[:, k] = innov_std_sp
         self.ofk2_reg[:, k] = (da, q_meas, dde, dv, dtheta)
@@ -252,7 +240,6 @@ class SimLogs:
         sim: dict,
         sp_theory: dict,
         th_vec: np.ndarray,
-        th_vec_legacy: np.ndarray,
         elevator_doublet_amp_deg: float,
         coeff_start_err: float,
         ofk2_start_scale: float | None,
@@ -277,10 +264,6 @@ class SimLogs:
         out["ofk2_std"] = self.ofk2_std[:, :k].copy()
         out["ofk2_d_params"] = self.ofk2_d_params[:, :k].copy()
         out["ofk2_d_params_trim"] = self.ofk2_d_params_trim[:, :k].copy()
-        out["ofk2_legacy_params"] = self.ofk2_legacy_params[:, :k].copy()
-        out["ofk2_legacy_std"] = self.ofk2_legacy_std[:, :k].copy()
-        out["ofk2_legacy_d_params_trim"] = self.ofk2_legacy_d_params_trim[:, :k].copy()
-        out["sp_theory_vec_legacy"] = th_vec_legacy.copy()
         out["ofk2_innov_prior"] = self.ofk2_innov_prior[:, :k].copy()
         out["ofk2_innov_std"] = self.ofk2_innov_std[:, :k].copy()
         out["ofk2_reg"] = self.ofk2_reg[:, :k].copy()

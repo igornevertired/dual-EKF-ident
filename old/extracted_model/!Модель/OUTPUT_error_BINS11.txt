@@ -1,1 +1,0 @@
-TIME(sec.)  dFi(rad)  dLm(rad)

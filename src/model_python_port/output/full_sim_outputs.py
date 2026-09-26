@@ -487,7 +487,7 @@ def plot_ofk2_params_time(data, out_path=None):
 
 def plot_ofk2_params_with_three_sigma(data, out_path=None):
     """
-    Hoff: θ̂(t) с полосами [θ̂ − 3σ, θ̂ + 3σ]; пунктир — эталон на балансировке.
+    ОФК-2: θ̂(t) с полосами [θ̂ − 3σ, θ̂ + 3σ]; пунктир — эталон на балансировке.
     """
     from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
 
@@ -528,7 +528,7 @@ def plot_ofk2_params_with_three_sigma(data, out_path=None):
         ax.set_xlabel("Время (с)")
 
     fig.suptitle(
-        "ОФК-2 (Hoff): оценка параметров и полосы ±3σ",
+        "ОФК-2: оценка параметров и полосы ±3σ",
         fontsize=12,
     )
     plt.tight_layout()
@@ -595,36 +595,6 @@ def plot_ofk2_error_with_posterior_three_sigma(data, out_dir=None):
         REPORT_PARAM_INDICES,
         title="ОФК-2 (новая модель): ошибка параметров и полосы ±3σ",
         out_path=base / "ofk2_error_vs_three_sigma_P.png",
-        band_label=r"$\pm 3\sigma$ фильтра",
-        line_label="ошибка: оценка − балансировка",
-    )
-
-
-def plot_ofk2_error_legacy_three_sigma(data, out_dir=None):
-    """ОФК-2 (Hoff, 3 рег., 6 coeff): Δ = θ̂ − θ_trim и полосы ±3σ."""
-    from ..filtering.ofk2_ekf_legacy import LEGACY_PARAM_NAMES
-
-    if "ofk2_legacy_d_params_trim" not in data:
-        print("plot_ofk2_error_legacy_three_sigma: нет legacy-лога, пропуск")
-        return
-
-    t = np.asarray(data["ofk2_time"], dtype=float)
-    err = np.asarray(data["ofk2_legacy_d_params_trim"], dtype=float)
-    std = np.asarray(data["ofk2_legacy_std"], dtype=float)
-
-    base = Path(out_dir or "src/plots")
-    base.mkdir(parents=True, exist_ok=True)
-
-    _plot_ofk2_error_three_sigma_panels(
-        t,
-        err,
-        std,
-        LEGACY_PARAM_NAMES,
-        tuple(range(len(LEGACY_PARAM_NAMES))),
-        title="ОФК-2 (Hoff, 3 рег.): ошибка параметров и полосы ±3σ",
-        out_path=base / "ofk2_error_vs_three_sigma_legacy.png",
-        band_color="darkorange",
-        line_color="firebrick",
         band_label=r"$\pm 3\sigma$ фильтра",
         line_label="ошибка: оценка − балансировка",
     )

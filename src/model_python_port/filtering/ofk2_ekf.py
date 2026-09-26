@@ -1,5 +1,5 @@
 """
-ОФК-2: продольная модель, 5 ДУ. Идентификация L*, M*, X*.
+ОФК-2: идентификация L*, M*, X* по 5 ДУ, 50 Гц.
 
     α̇ = Lα·δα + Lq·q + Lδe·δδe + Lv·δV + Lθ·δθ
     q̇ = Mα·δα + Mq·q + Mδe·δδe + Mv·δV + Mθ·δθ
@@ -11,10 +11,15 @@
 
 Состояние: x = [Lα…Lθ, Mα…Mθ, Xα…Xθ]  (15 коэфф.)
 Z = [α̇_fd, q̇_fd, V̇_fd, az]
-θ̇ и ḣ — кинематика (известны), в оценку коэффициентов не входят.
+θ̇ и ḣ — кинематика, в оценку коэффициентов не входят.
+
+Входы с датчиков — ``signals_from_sensors`` (α, V из NP+Cbn; q из ωz;
+θ из сырой Cbn; az сырой ДЛУ; δe из FX1).
 """
 
 from __future__ import annotations
+
+from typing import NamedTuple
 
 import numpy as np
 
@@ -122,6 +127,49 @@ def reconstruct_alpha_from_nav(np_bins: np.ndarray, cbn: np.ndarray) -> tuple[fl
 
 def reconstruct_theta_from_nav(cbn: np.ndarray) -> float:
     return float(c_ang(np.asarray(cbn, dtype=float))[1])
+
+
+class Ofk2Signals(NamedTuple):
+    """То, что ОФК-2 берёт с контура на одном такте."""
+
+    alpha: float
+    v: float
+    theta: float
+    q: float
+    az: float
+    de: float
+    da: float
+    dde: float
+    dv: float
+    dtheta: float
+
+
+def signals_from_sensors(
+    np_cons: np.ndarray,
+    cbn: np.ndarray,
+    w_cons: np.ndarray,
+    a_m: np.ndarray,
+    de_deg: float,
+    trim: dict[str, float],
+) -> Ofk2Signals:
+    """Собрать α, V, θ, q, az, δe и отклонения от балансировки."""
+    alpha, v = reconstruct_alpha_from_nav(np_cons, cbn)
+    theta = reconstruct_theta_from_nav(cbn)
+    q = float(np.asarray(w_cons, dtype=float).reshape(3)[2])
+    az = float(np.asarray(a_m, dtype=float).reshape(3)[1]) / G0
+    de = float(de_deg) * np.pi / 180.0
+    return Ofk2Signals(
+        alpha=alpha,
+        v=v,
+        theta=theta,
+        q=q,
+        az=az,
+        de=de,
+        da=alpha - trim["alpha0"],
+        dde=de - trim["delta_e0"],
+        dv=v - trim["v0"],
+        dtheta=theta - trim["theta0"],
+    )
 
 
 def build_regressors(
