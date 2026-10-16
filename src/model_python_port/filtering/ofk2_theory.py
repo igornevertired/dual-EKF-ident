@@ -8,6 +8,11 @@
           + a′42 a33 Δθ − (a44+a′42) Δωz
           + (b41−a′42 b31) δB + b′41 δ̇B
 
+Дополнительно в 1-й строке — известный вход тяги: + Xδt ΔδT.
+Автомат тяги во время дублета сдвигает РУД на ~0.3, без этого
+члена уравнение ΔV̇ не сходится с FX1 и портит все X* (а через связи — и L*, M*).
+Lδt, Θδt, Mδt ~1e-3 — пренебрегаем.
+
 Переобозначения (то, что оценивает EKF)::
 
     Xv=−a11, Xα=−a12, Xθ=−a13, Xδe=−b11
@@ -15,9 +20,9 @@
     Θv=a31, Θα=a32, Θθ=a33, Θδe=b31
     Mv=−(a41−a′42 a31), Mα=−(a42−a′42 a32),
     Mθ=a′42 a33, Mq=−(a44+a′42),
-    Mδe=(b41−a′42 b31), Mδė=b′41
+    Mδe=(b41−a′42 b31), Mδė=b′41, Xδt — тяга
 
-θ — угол наклона траектории, sinθ = Vy/√(Vx²+Vz²) из ОФК-1.
+θ — угол наклона траектории, tgθ = Vy/√(Vx²+Vz²) из ОФК-1.
 Xq в (15) нет. p в 3-й строке поглощён в b31.
 """
 
@@ -48,6 +53,7 @@ PARAM_NAMES = (
     "Θδe",
     "Θv",
     "Θθ",
+    "Xδt",
 )
 # Научрук: мелкие игнорировать; Xα — с хорошей точностью.
 # Lq ≡ 1 (член +Δωz). Xθ ≈ −g — известная тяжесть, иначе путается с Xα.
@@ -66,10 +72,13 @@ N_TH = 4
 
 
 def path_angle_from_nav(vn: float, vh: float, ve: float) -> float:
-    """Угол наклона траектории: sinθ = Vy / √(Vx²+Vz²). NP: Vx=Vn, Vy=Vh, Vz=Ve."""
+    """Угол наклона траектории: tgθ = Vy / √(Vx²+Vz²) (≡ sinθ = Vy/|V|). NP: Vx=Vn, Vy=Vh, Vz=Ve.
+
+    В письме — sinθ = Vy/√(Vx²+Vz²): для малых θ то же самое, но при наборе
+    аргумент arcsin может выйти за 1, поэтому берём точную формулу.
+    """
     horiz = float(np.sqrt(vn * vn + ve * ve))
-    horiz = max(horiz, 1e-12)
-    return float(np.arcsin(np.clip(vh / horiz, -1.0, 1.0)))
+    return float(np.arctan2(vh, horiz))
 
 
 def path_angle_from_x(x: np.ndarray) -> float:
@@ -126,6 +135,7 @@ def ofk2_jacobian_at_trim(
     d_de_rad: float = 1.0e-4,
     d_v: float = 0.05,
     d_theta: float = 1.0e-4,
+    d_dt: float = 1.0e-3,
 ) -> dict[str, float]:
     del thetatr
     x_base = np.asarray(x0, dtype=float).copy()
@@ -202,6 +212,15 @@ def ofk2_jacobian_at_trim(
     lv_, mv_, xv_, tv_ = deriv_wrt("v", d_alpha, d_q, d_de_rad, d_v, d_theta)
     lth_, mth_, xth_, tth_ = deriv_wrt("theta", d_alpha, d_q, d_de_rad, d_v, d_theta)
 
+    # тяга: РУД x[15] и команда u[0] вместе
+    xp, xm = x_base.copy(), x_base.copy()
+    up, um = u_base.copy(), u_base.copy()
+    xp[15] += d_dt
+    xm[15] -= d_dt
+    up[0] += d_dt
+    um[0] -= d_dt
+    xdt_ = (_long_rates(xp, up, la)[2] - _long_rates(xm, um, la)[2]) / (2.0 * d_dt)
+
     adot0, qdot0, vdot0, tdot0 = eval_at(a0, q0, de0_rad, v0, theta0)
     del xq_, tq_
 
@@ -212,6 +231,7 @@ def ofk2_jacobian_at_trim(
         "v0": v0,
         "theta0": theta0,
         "h0": float(x_base[10]),
+        "delta_t0": float(x_base[15]),
         "alpha_dot0": adot0,
         "q_dot0": qdot0,
         "v_dot0": vdot0,
@@ -235,6 +255,7 @@ def ofk2_jacobian_at_trim(
         "T_de": float(tde_),
         "T_v": float(tv_),
         "T_theta": float(tth_),
+        "X_dt": float(xdt_),
     }
 
 
@@ -260,6 +281,7 @@ def theory_vector(th: dict[str, float]) -> np.ndarray:
             th["T_de"],
             th["T_v"],
             th["T_theta"],
+            th["X_dt"],
         ],
         dtype=float,
     )

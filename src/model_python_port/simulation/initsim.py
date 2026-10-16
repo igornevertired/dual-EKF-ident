@@ -134,6 +134,41 @@ def _find_balancing(htr, vtr, thetatr, gamtr, betatr, la):
     return bal
 
 
+def _refine_balancing_fx1(bal, htr, vtr, thetatr, gamtr, betatr, la, n_iter=20):
+    """
+    Уточнение балансировки по полной модели FX1 (метод Ньютона).
+    Неизвестные [δT, α, δV], невязка [V̇x, V̇y, ω̇z] = 0.
+    FCT.m упрощён, и после координатного спуска ЛА в «trim» разгоняется
+    (V̇ ≈ 0.13 м/с²) — автомат тяги работает постоянно и портит ОФК-2.
+    """
+    from ..dynamics.fx1 import fx1
+
+    bal = np.asarray(bal, dtype=float).copy()
+    idx = (0, 1, 2)
+
+    def resid(b):
+        x = intstate(htr, vtr, thetatr, betatr, gamtr, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0], b)
+        u = np.array([b[0], b[2], 0.0, 0.0], dtype=float)
+        dx = fx1(x, u, 0.0, la)[0]
+        return np.array([dx[0], dx[1], dx[5]], dtype=float)
+
+    steps = (1e-5, 1e-6, 1e-4)
+    for _ in range(n_iter):
+        r = resid(bal)
+        if np.max(np.abs(r)) < 1e-9:
+            break
+        jac = np.zeros((3, 3))
+        for j, (i, h) in enumerate(zip(idx, steps)):
+            bp, bm = bal.copy(), bal.copy()
+            bp[i] += h
+            bm[i] -= h
+            jac[:, j] = (resid(bp) - resid(bm)) / (2.0 * h)
+        d = np.linalg.solve(jac, -r)
+        for j, i in enumerate(idx):
+            bal[i] += d[j]
+    return bal
+
+
 def _nominal_bal():
     """
     Вектор балансировки ``BAL`` для построения начального состояния.
@@ -160,6 +195,7 @@ def initsim():
     betatr = 0.0
 
     bal = _find_balancing(htr, vtr, thetatr, gamtr, betatr, la)
+    bal = _refine_balancing_fx1(bal, htr, vtr, thetatr, gamtr, betatr, la)
     tettr = thetatr + bal[1]
     x0 = intstate(htr, vtr, thetatr, betatr, gamtr, 0.0, 0.0, 0.0, [0.0, 0.0, 0.0], bal)
     u0 = np.array([bal[0], bal[2], 0.0, 0.0], dtype=float)

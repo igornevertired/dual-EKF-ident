@@ -5,8 +5,11 @@
     Δα̇  = Lα δα + 1·δq + Lδe δδe + Lv δV + Lθ δθ
     Δθ̇  = Θα δα + Θδe δδe + Θv δV + Θθ δθ
     Δω̇z = Mα δα + Mq δq + Mδe δδe + Mv δV + Mθ δθ + Mδė δ̇e
+    (+ Xδt ΔδT в 1-й строке — известный вход тяги)
 
-θ из ОФК-1: sinθ = Vy/√(Vx²+Vz²). Z = [δα, δq, δV, δθ].
+Прогноз — RK4 с линейной интерполяцией δe, δT внутри шага.
+
+θ из ОФК-1: tgθ = Vy/√(Vx²+Vz²). Z = [δα, δq, δV, δθ].
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ _ABS_FLOOR = np.array(
         0.05, 0.05, 0.05, 0.01, 0.05, 0.05,
         0.05, 0.02, 0.01, 0.50,
         0.05, 0.02, 0.01, 0.05,
+        0.05,
     ],
     dtype=float,
 )
@@ -91,13 +95,16 @@ def initial_covariance(
                 0.30, 0.30, 0.30, 0.05, 0.30, 0.20,
                 0.30, 0.20, 0.05, 0.50,
                 0.30, 0.20, 0.05, 0.30,
+                0.30,
             ],
             dtype=float,
         )
     else:
         ref = scale_ref if scale_ref is not None else param0
         ref = np.asarray(ref, dtype=float).reshape(N_PARAM)
-        sig = np.maximum(np.abs(ref) * float(coeff_start_err) / 3.0, _ABS_FLOOR * 0.2)
+        # 1σ = ожидаемая стартовая ошибка. Раньше было /3: старт +30 % лежал на 3σ,
+        # и фильтр почти не сдвигал параметры за короткий дублет.
+        sig = np.maximum(np.abs(ref) * float(coeff_start_err), _ABS_FLOOR * 0.2)
     sig = np.asarray(sig, dtype=float).copy()
     sig[_FROZEN] = 0.0
     p = np.zeros((N_STATE, N_STATE), dtype=float)
@@ -141,11 +148,17 @@ def _pin_frozen(
 
 
 def measurement_covariance(
-    sigma_alpha: float = 0.010,
-    sigma_q: float = 0.003,
-    sigma_v: float = 0.40,
-    sigma_theta: float = 0.010,
+    sigma_alpha: float = 1.0e-4,
+    sigma_q: float = 5.0e-5,
+    sigma_v: float = 0.01,
+    sigma_theta: float = 1.0e-4,
 ) -> np.ndarray:
+    """σ ≈ 3–5 × фактической ошибки измерений после ОФК-1.
+
+    Факт (240 с, после 30 с): α 3e-5 рад, q 1e-5 рад/с, V 3e-3 м/с, θ 4e-5 рад.
+    Прежние 0.01 / 0.003 / 0.4 / 0.01 были в 100–300 раз завышены — фильтр
+    почти игнорировал измерения и не успевал ничего выучить за дублет.
+    """
     return np.diag(
         np.array([sigma_alpha, sigma_q, sigma_v, sigma_theta], dtype=float) ** 2
     )
@@ -166,7 +179,7 @@ def reconstruct_theta_from_nav(cbn: np.ndarray) -> float:
 
 
 def reconstruct_path_angle_from_nav(np_cons: np.ndarray) -> float:
-    """θ из ОФК-1: sinθ = Vh / √(Vn²+Ve²)."""
+    """θ из ОФК-1: tgθ = Vh / √(Vn²+Ve²)."""
     npv = np.asarray(np_cons, dtype=float).reshape(-1)
     return path_angle_from_nav(float(npv[0]), float(npv[1]), float(npv[2]))
 
@@ -189,6 +202,7 @@ class Ofk2Signals(NamedTuple):
     dde: float
     dv: float
     dtheta: float
+    ddt: float = 0.0
 
 
 def signals_from_sensors(
@@ -198,8 +212,9 @@ def signals_from_sensors(
     a_m: np.ndarray,
     de_deg: float,
     trim: dict[str, float],
+    throttle: float | None = None,
 ) -> Ofk2Signals:
-    """α, V из NP+Cbn; q из ДУС; θ из NP ОФК-1; отклонения от балансировки."""
+    """α, V из NP+Cbn; q из ДУС; θ из NP ОФК-1; δT — РУД; отклонения от балансировки."""
     alpha, v = reconstruct_alpha_from_nav(np_cons, cbn)
     theta = reconstruct_path_angle_from_nav(np_cons)
     q = float(np.asarray(w_cons, dtype=float).reshape(3)[2])
@@ -217,6 +232,7 @@ def signals_from_sensors(
         dde=de - trim["delta_e0"],
         dv=v - trim["v0"],
         dtheta=theta - trim["theta0"],
+        ddt=0.0 if throttle is None else float(throttle) - trim.get("delta_t0", 0.0),
     )
 
 
@@ -262,23 +278,16 @@ def build_z_kinematics(
     )
 
 
-def _split(
-    x: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float, float]:
-    i0 = 0
-    i1 = N_L
-    i2 = N_L + N_M
-    i3 = N_L + N_M + N_X
-    l = x[i0:i1]
-    m = x[i1:i2]
-    xx = x[i2:i3]
-    tt = x[i3:N_PARAM]
-    return l, m, xx, tt, float(x[I_DA]), float(x[I_DQ]), float(x[I_DV]), float(x[I_DTH])
+_I_L = slice(0, N_L)
+_I_M = slice(N_L, N_L + N_M)
+_I_X = slice(N_L + N_M, N_L + N_M + N_X)
+_I_T = slice(N_L + N_M + N_X, N_L + N_M + N_X + N_TH)
+_I_XDT = PARAM_NAMES.index("Xδt")
+_N_SUB = 4
 
 
 def _predict_z(x: np.ndarray) -> np.ndarray:
-    _l, _m, _xx, _tt, da, dq, dv, dth = _split(x)
-    return np.array([da, dq, dv, dth], dtype=float)
+    return np.array([x[I_DA], x[I_DQ], x[I_DV], x[I_DTH]], dtype=float)
 
 
 def _meas_jacobian() -> np.ndarray:
@@ -290,61 +299,75 @@ def _meas_jacobian() -> np.ndarray:
     return h
 
 
+def _rhs(par: np.ndarray, s: np.ndarray, dde: float, dde_dot: float, ddt: float) -> np.ndarray:
+    """Правая часть (15) + Xδt ΔδT. s = [δα, δq, δV, δθ]."""
+    da, dq, dv, dth = s
+    l, m, xx, tt = par[_I_L], par[_I_M], par[_I_X], par[_I_T]
+    # (15) строка 2: δα, +Δωz, δB, ΔV, Δθ
+    da_dot = l @ np.array([da, dq, dde, dv, dth])
+    # (15) строка 4: δα, Δωz, δB, ΔV, Δθ, δ̇B
+    dq_dot = m @ np.array([da, dq, dde, dv, dth, dde_dot])
+    # (15) строка 1: нет Δωz; + тяга
+    dv_dot = xx @ np.array([da, dde, dv, dth]) + par[_I_XDT] * ddt
+    # (15) строка 3: нет Δωz
+    dth_dot = tt @ np.array([da, dde, dv, dth])
+    return np.array([da_dot, dq_dot, dv_dot, dth_dot], dtype=float)
+
+
+def _propagate(
+    x: np.ndarray,
+    dt: float,
+    dde0: float,
+    dde1: float,
+    ddt0: float,
+    ddt1: float,
+    dde_dot: float,
+) -> np.ndarray:
+    """RK4 на _N_SUB подшагах; δe, δT — линейно между отсчётами k−1 и k.
+
+    Эйлер на dt=0.2 с при короткопериодическом движении (|λ|≈0.8 1/с)
+    и δe, взятый на конце интервала, дают смещение M*, L* на 10–20 %.
+    """
+    par = x[:N_PARAM]
+    s = x[N_PARAM:].copy()
+    h = dt / _N_SUB
+    for j in range(_N_SUB):
+        ta, tm, tb = j / _N_SUB, (j + 0.5) / _N_SUB, (j + 1) / _N_SUB
+        de_a, de_m, de_b = (dde0 + (dde1 - dde0) * c for c in (ta, tm, tb))
+        dt_a, dt_m, dt_b = (ddt0 + (ddt1 - ddt0) * c for c in (ta, tm, tb))
+        k1 = _rhs(par, s, de_a, dde_dot, dt_a)
+        k2 = _rhs(par, s + 0.5 * h * k1, de_m, dde_dot, dt_m)
+        k3 = _rhs(par, s + 0.5 * h * k2, de_m, dde_dot, dt_m)
+        k4 = _rhs(par, s + h * k3, de_b, dde_dot, dt_b)
+        s = s + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    x_pred = x.copy()
+    x_pred[N_PARAM:] = s
+    return x_pred
+
+
 def _predict(
     x: np.ndarray,
     dt: float,
     dde: float,
     dde_dot: float = 0.0,
+    *,
+    dde_prev: float | None = None,
+    ddt: float = 0.0,
+    ddt_prev: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    l, m, xx, tt, da, dq, dv, dth = _split(x)
-    # (15) строка 2: δα, +Δωz, δB, ΔV, Δθ
-    phi_l = np.array([da, dq, float(dde), dv, dth], dtype=float)
-    # (15) строка 4: δα, Δωz, δB, ΔV, Δθ, δ̇B
-    phi_m = np.array([da, dq, float(dde), dv, dth, float(dde_dot)], dtype=float)
-    # (15) строка 1: нет Δωz
-    phi_x = np.array([da, float(dde), dv, dth], dtype=float)
-    # (15) строка 3: нет Δωz
-    phi_t = phi_x
-
-    da_dot = float(l @ phi_l)
-    dq_dot = float(m @ phi_m)
-    dv_dot = float(xx @ phi_x)
-    dth_dot = float(tt @ phi_t)
-
-    x_pred = x.copy()
-    x_pred[I_DA] = da + dt * da_dot
-    x_pred[I_DQ] = dq + dt * dq_dot
-    x_pred[I_DV] = dv + dt * dv_dot
-    x_pred[I_DTH] = dth + dt * dth_dot
-
-    i_l0, i_l1 = 0, N_L
-    i_m0, i_m1 = N_L, N_L + N_M
-    i_x0, i_x1 = N_L + N_M, N_L + N_M + N_X
-    i_t0, i_t1 = N_L + N_M + N_X, N_PARAM
-
+    dde0 = float(dde) if dde_prev is None else float(dde_prev)
+    ddt0 = float(ddt) if ddt_prev is None else float(ddt_prev)
+    args = (float(dt), dde0, float(dde), ddt0, float(ddt), float(dde_dot))
+    x_pred = _propagate(x, *args)
+    # F — численно (центральные разности) по оцениваемым и δα, δq, δV, δθ
     f = np.eye(N_STATE, dtype=float)
-    # δα
-    f[I_DA, I_DA] += dt * l[0]
-    f[I_DA, I_DQ] += dt * l[1]
-    f[I_DA, I_DV] += dt * l[3]
-    f[I_DA, I_DTH] += dt * l[4]
-    f[I_DA, i_l0:i_l1] += dt * phi_l
-    # δq  (15) строка 4
-    f[I_DQ, I_DA] += dt * m[0]
-    f[I_DQ, I_DQ] += dt * m[1]
-    f[I_DQ, I_DV] += dt * m[3]
-    f[I_DQ, I_DTH] += dt * m[4]
-    f[I_DQ, i_m0:i_m1] += dt * phi_m
-    # δV  (15) строка 1, нет Xq
-    f[I_DV, I_DA] += dt * xx[0]
-    f[I_DV, I_DV] += dt * xx[2]
-    f[I_DV, I_DTH] += dt * xx[3]
-    f[I_DV, i_x0:i_x1] += dt * phi_x
-    # δθ  (нет Θq)
-    f[I_DTH, I_DA] += dt * tt[0]
-    f[I_DTH, I_DV] += dt * tt[2]
-    f[I_DTH, I_DTH] += dt * tt[3]
-    f[I_DTH, i_t0:i_t1] += dt * phi_t
+    cols = list(_ESTIMATED) + [I_DA, I_DQ, I_DV, I_DTH]
+    for i in cols:
+        e = 1.0e-6 * max(1.0, abs(float(x[i])))
+        xp, xm = x.copy(), x.copy()
+        xp[i] += e
+        xm[i] -= e
+        f[:, i] = (_propagate(xp, *args) - _propagate(xm, *args)) / (2.0 * e)
     return x_pred, f
 
 
@@ -359,6 +382,9 @@ def ekf_step(
     dt: float,
     dtheta: float = 0.0,
     dde_dot: float = 0.0,
+    dde_prev: float | None = None,
+    ddt: float = 0.0,
+    ddt_prev: float | None = None,
     x_theta: float = 0.0,
     param_fixed: np.ndarray | None = None,
     r: np.ndarray | None = None,
@@ -379,7 +405,10 @@ def ekf_step(
     if dt <= 0.0:
         return x.copy(), 0.5 * (p + p.T), innov_post, innov_prior, sqrt_s
 
-    x_pred, f = _predict(x, dt, float(dde), dde_dot=float(dde_dot))
+    x_pred, f = _predict(
+        x, dt, float(dde), dde_dot=float(dde_dot),
+        dde_prev=dde_prev, ddt=float(ddt), ddt_prev=ddt_prev,
+    )
     x_pred, _ = _pin_frozen(x_pred, p, param_fixed)
     p_pred = f @ p @ f.T + process_noise(dt, q_std=q_std)
     p_pred = 0.5 * (p_pred + p_pred.T)

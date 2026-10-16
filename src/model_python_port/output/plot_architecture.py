@@ -437,6 +437,153 @@ def plot_ofk2_scheme(out_path: Path | str | None = None) -> Path:
     return path
 
 
+def _path_arrow(ax, pts, text="", *, text_xy=None, ls="-", color="#2b6cb0", fs=8.0, ha="left"):
+    """Ломаная стрелка: линии по точкам, наконечник на последнем отрезке."""
+    for a, b in zip(pts[:-2], pts[1:-1]):
+        ax.plot([a[0], b[0]], [a[1], b[1]], color=color, lw=1.3, ls=ls)
+    ax.add_patch(
+        FancyArrowPatch(
+            pts[-2], pts[-1], arrowstyle="-|>", mutation_scale=13,
+            linewidth=1.3, color=color, linestyle=ls,
+        )
+    )
+    if text:
+        tx, ty = text_xy
+        ax.text(tx, ty, text, ha=ha, va="center", fontsize=fs, color=color, linespacing=1.3)
+
+
+def plot_contour_scheme(out_path: Path | str | None = None) -> Path:
+    """Контур ЛА → ДУС/ДЛУ → БИНС, ГНСС → ОФК-1 → ОФК-2 по текущему коду."""
+    path = Path(out_path or "src/plots/contour_scheme.png")
+    fig, ax = plt.subplots(figsize=(18.0, 10.4))
+    ax.set_xlim(0, 18.0)
+    ax.set_ylim(-0.4, 10.2)
+    ax.axis("off")
+    ax.set_title(
+        "Контур ЛА / БИНС / ГНСС / ОФК-1 / ОФК-2", fontsize=14, fontweight="bold"
+    )
+    bfs = 10.0
+
+    # блоки
+    _box(ax, (0.3, 4.3), 2.3, 1.8, "ЛА\nFX1, 1 кГц (RK4)\nсостояние x", fontsize=bfs)
+    _box(ax, (0.3, 1.5), 2.3, 1.9,
+         "Автопилот, 100 Гц\nV, h → РУД δT\nтангаж → руль δв\n+ дублет ±5°, t = 10 с",
+         fontsize=9.0)
+    _box(ax, (3.5, 7.6), 2.2, 1.3, "ДУС   ДЛУ\nbias, масштаб,\nперекос, шум", fontsize=9.5)
+    _box(ax, (6.7, 7.3), 2.8, 1.9, "БИНС, 1 кГц\nавтономная\n(ОФК-1 в неё не пишет)\nq, Cbn, NP", fontsize=bfs)
+    _box(ax, (6.7, 3.0), 2.8, 1.6, "ГНСС, 10 Гц\nистина + шум\nσ = 6.6 м, 0.05 м/с", fontsize=bfs)
+    _box(ax, (11.8, 5.0), 2.6, 1.3, "ОФК-1, 10 Гц\nКФ по ошибкам БИНС\n15 состояний", fontsize=bfs)
+    _box(ax, (11.8, 2.7), 2.6, 1.4, "Коррекция выходов\nпотребителю", fontsize=bfs)
+    _box(ax, (11.8, 0.25), 2.6, 1.5, "ОФК-2, 5 Гц\nEKF, идентификация\nкоэффициентов (15)", fontsize=bfs)
+
+    # сумматор
+    cx, cy, r = 10.6, 5.65, 0.3
+    ax.add_patch(Circle((cx, cy), r, facecolor="white", edgecolor="black", lw=1.2))
+    ax.plot([cx - r * 0.7, cx + r * 0.7], [cy - r * 0.7, cy + r * 0.7], color="black", lw=1.0)
+    ax.plot([cx - r * 0.7, cx + r * 0.7], [cy + r * 0.7, cy - r * 0.7], color="black", lw=1.0)
+    ax.text(cx - 0.42, cy + 0.42, "+", fontsize=13, ha="center", va="center")
+    ax.text(cx - 0.42, cy - 0.45, "−", fontsize=13, ha="center", va="center")
+
+    # ЛА ↔ автопилот
+    _path_arrow(ax, [(1.05, 3.4), (1.05, 4.3)], r"$u=[\delta_T,\delta_в,\delta_н,\delta_э]$",
+                text_xy=(0.05, 3.85), fs=8.0, ha="left")
+    _path_arrow(ax, [(1.95, 4.3), (1.95, 3.4)], "x", text_xy=(2.05, 3.85))
+
+    # ЛА → ДУС/ДЛУ
+    _path_arrow(ax, [(1.45, 6.1), (1.45, 8.25), (3.5, 8.25)],
+                "ω, a идеальные\n(связанная СК)", text_xy=(1.6, 8.75))
+    # ДУС/ДЛУ → БИНС
+    _path_arrow(ax, [(5.7, 8.25), (6.7, 8.25)])
+    ax.text(3.6, 9.6,
+            r"$\omega_m=[\omega_x,\omega_y,\omega_z]$" "\n" r"$a_m=[a_x,a_y,a_z]$" "\nс ошибками",
+            fontsize=8.5, color="#2b6cb0", va="center", linespacing=1.3)
+    # ЛА → ГНСС
+    _path_arrow(ax, [(2.6, 5.2), (4.6, 5.2), (4.6, 3.8), (6.7, 3.8)],
+                "истина:\nφ, λ, h,\n" r"$V_N, V_E, V_h$", text_xy=(4.75, 4.55))
+
+    # БИНС → сумматор (+), ГНСС → сумматор (−)
+    _path_arrow(ax, [(9.5, 8.0), (cx, 8.0), (cx, cy + r)],
+                r"$Y_{БИНС}$ = φ, λ, h, $V_N, V_E, V_h$", text_xy=(9.6, 8.3))
+    _path_arrow(ax, [(9.5, 3.8), (cx, 3.8), (cx, cy - r)],
+                r"$Y_{ГНСС}$ = φ, λ, h, $V_N, V_E, V_h$", text_xy=(9.6, 3.5))
+    # сумматор → ОФК-1
+    _path_arrow(ax, [(cx + r, cy), (11.8, cy)])
+    ax.text(11.0, 5.85, r"$\varepsilon$", fontsize=9.0, color="#2b6cb0", va="center")
+    ax.text(10.05, 5.65, r"$\varepsilon = Y_{БИНС}-Y_{ГНСС}$" "\n(6 разностей)",
+            fontsize=8.5, color="#2b6cb0", va="center", ha="right")
+    # БИНС → ОФК-1: Cbn, a_m
+    _path_arrow(ax, [(8.1, 9.2), (8.1, 9.75), (13.1, 9.75), (13.1, 6.3)],
+                r"$C_{bn},\ a_m$, NP", text_xy=(13.2, 7.4))
+
+    # выход ОФК-1
+    _path_arrow(ax, [(14.4, 5.65), (15.0, 5.65)])
+    ax.text(15.1, 5.65,
+            "x̂ ОФК-1 (15):\n"
+            r"$\delta\vartheta_1, \delta\vartheta_2, \delta\vartheta_3$" "\n"
+            r"$\delta V_N, \delta V_E, \delta V_h$" "\n"
+            r"$\delta\varphi, \delta\lambda, \delta h$" "\n"
+            r"$\Delta a_x, \Delta a_y, \Delta a_z$" "\n"
+            r"$\Delta\omega_x, \Delta\omega_y, \Delta\omega_z$" "\n"
+            "+ ковариация P",
+            fontsize=9.5, va="center", linespacing=1.45)
+
+    # ОФК-1 → коррекция; БИНС/датчики → коррекция
+    _path_arrow(ax, [(13.1, 5.0), (13.1, 4.1)], r"$\hat x$", text_xy=(13.2, 4.55))
+    _path_arrow(ax, [(11.5, 9.75), (11.5, 3.4), (11.8, 3.4)],
+                "NP,\n" r"$\omega_m$," "\n" r"$a_m$", text_xy=(11.0, 4.3), fs=8.0)
+    ax.add_patch(Circle((11.5, 9.75), 0.06, color="#2b6cb0"))
+    ax.text(14.5, 3.4,
+            r"$NP-\hat\delta$  (V, φ, λ, h)" "\n"
+            r"$\omega_m-\Delta\hat\omega$" "\n"
+            r"$a_m-\Delta\hat a$" "\n"
+            r"$C_{bn}$ — с БИНС, без поправки $\hat\vartheta$",
+            fontsize=8.5, va="center", color="#2d3748", linespacing=1.35)
+
+    # коррекция → ОФК-2
+    _path_arrow(ax, [(13.1, 2.7), (13.1, 1.75)])
+    ax.text(13.2, 2.22,
+            r"α, V из $NP-\hat\delta$ и $C_{bn}$;  $\omega_z$;" "\n"
+            r"$\mathrm{tg}\,\theta = V_h/\sqrt{V_N^2+V_E^2}$",
+            fontsize=8.3, va="center", color="#2b6cb0", linespacing=1.3)
+    # приводы → ОФК-2
+    _path_arrow(ax, [(1.45, 1.5), (1.45, 0.6), (11.8, 0.6)],
+                r"$\delta_в,\ \delta_T$ — положения рулевого привода и РУД",
+                text_xy=(1.6, 0.85), ls="--")
+
+    # выход ОФК-2
+    _path_arrow(ax, [(14.4, 1.0), (15.0, 1.0)])
+    ax.text(15.1, 1.0,
+            "Выход ОФК-2:\n"
+            r"$L_\alpha, L_{\delta e}, M_\alpha, M_q, M_{\delta e}$" "\n"
+            r"$X_\alpha, X_{\delta e}, \Theta_\alpha, X_{\delta t}$" "\n"
+            r"$\Delta\hat\alpha, \Delta\hat\omega_z, \Delta\hat V, \Delta\hat\theta$, P",
+            fontsize=9.5, va="center", linespacing=1.45)
+
+    # модель ОФК-2
+    _panel(
+        ax, (3.0, 1.15), 7.4, 1.65,
+        "Модель ОФК-2: система (15) + тяга (отклонения от балансировки)",
+        [
+            r"$\Delta\dot V = X_\alpha\Delta\alpha + X_{\delta e}\Delta\delta_в + X_V\Delta V + X_\theta\Delta\theta + X_{\delta t}\Delta\delta_T$",
+            r"$\Delta\dot\alpha = L_\alpha\Delta\alpha + \Delta\omega_z + L_{\delta e}\Delta\delta_в + L_V\Delta V + L_\theta\Delta\theta$",
+            r"$\Delta\dot\theta = \Theta_\alpha\Delta\alpha + \Theta_{\delta e}\Delta\delta_в + \Theta_V\Delta V + \Theta_\theta\Delta\theta$",
+            r"$\Delta\dot\omega_z = M_\alpha\Delta\alpha + M_q\Delta\omega_z + M_{\delta e}\Delta\delta_в + M_V\Delta V + M_\theta\Delta\theta + M_{\dot\delta e}\Delta\dot\delta_в$",
+        ],
+        title_fs=9.5, body_fs=8.6,
+    )
+    ax.text(
+        3.05, -0.2,
+        r"Измерение $Z=[\Delta\alpha, \Delta\omega_z, \Delta V, \Delta\theta]$;  прогноз — RK4, шаг 0.2 с.  "
+        r"Заморожены на балансировке: $L_q=1,\ X_\theta\approx-g$, $L_V, L_\theta, M_V, M_\theta, M_{\dot\delta e}, X_V, \Theta_{\delta e}, \Theta_V, \Theta_\theta$",
+        fontsize=7.8, color="#4a5568", va="center",
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=160, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
+
+
 def plot_all_architecture(out_dir: Path | str | None = None) -> list[Path]:
     base = Path(out_dir or "src/plots")
     paths = [
@@ -444,6 +591,7 @@ def plot_all_architecture(out_dir: Path | str | None = None) -> list[Path]:
         plot_ofk_full_scheme(base / "ofk_full_scheme.png"),
         plot_ofk_advisor_scheme(base / "ofk_advisor_scheme.png"),
         plot_ofk2_scheme(base / "ofk2_scheme.png"),
+        plot_contour_scheme(base / "contour_scheme.png"),
     ]
     for p in paths:
         print(f"Plot saved to {p}")

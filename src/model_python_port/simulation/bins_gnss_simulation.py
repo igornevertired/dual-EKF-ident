@@ -130,6 +130,7 @@ def run_simulation(
         "v0": float(ofk2_theory["v0"]),
         "theta0": float(ofk2_theory["theta0"]),
         "h0": float(ofk2_theory["h0"]),
+        "delta_t0": float(ofk2_theory["delta_t0"]),
     }
     _coeff_start_err = float(coeff_start_err)
     if ofk2_start_scale is None:
@@ -153,6 +154,7 @@ def run_simulation(
     )
     ofk2_seeded = False
     last_dde: float | None = None
+    last_ddt: float | None = None
     az0 = None
     alpha_gnss = 0.0
 
@@ -274,7 +276,9 @@ def run_simulation(
             np_cons, w_cons, cbn_cons, a_cons = consumer_outputs(
                 np_bins, w_m, cbn, a_m, x_ofk, feedback=ofk1_feedback
             )
-            sig = signals_from_sensors(np_cons, cbn_cons, w_cons, a_cons, x[16], trim)
+            sig = signals_from_sensors(
+                np_cons, cbn_cons, w_cons, a_cons, x[16], trim, throttle=x[15]
+            )
             if az0 is None:
                 az0 = sig.az
             if not ofk2_seeded:
@@ -293,7 +297,9 @@ def run_simulation(
                 dde_dot = 0.0
             else:
                 dde_dot = (float(sig.dde) - last_dde) / dt_ofk2
+            dde_prev, ddt_prev = last_dde, last_ddt
             last_dde = float(sig.dde)
+            last_ddt = float(sig.ddt)
             (
                 x_ofk2,
                 p_ofk2,
@@ -310,6 +316,9 @@ def run_simulation(
                 dt=dt_ofk2,
                 dtheta=sig.dtheta,
                 dde_dot=dde_dot,
+                dde_prev=dde_prev,
+                ddt=sig.ddt,
+                ddt_prev=ddt_prev,
                 param_fixed=th_vec,
                 q_std=float(ofk2_q_std),
             )
