@@ -71,7 +71,7 @@ def elevator_doublet_deg(
 def elevator_3211_deg(
     time: float,
     *,
-    t0: float = 15.0,
+    t0: float = 10.0,
     unit: float = 1.0,
     amp_deg: float = 3.0,
 ) -> float:
@@ -92,6 +92,9 @@ def elevator_maneuver_active(
     kind: str | None,
     *,
     extra_t0: tuple[float, ...] = (),
+    amp_deg: float = 3.0,
+    t0_3211: float = 10.0,
+    unit_3211: float = 1.0,
 ) -> bool:
     """True на интервале, где программа δV ненулевая (или только что была)."""
     if not kind:
@@ -99,7 +102,17 @@ def elevator_maneuver_active(
     if kind == "doublet":
         return abs(elevator_doublet_deg(time, extra_t0=extra_t0)) > 0.0
     if kind == "3211":
-        return abs(elevator_3211_deg(time)) > 0.0
+        return (
+            abs(
+                elevator_3211_deg(
+                    time,
+                    t0=float(t0_3211),
+                    unit=float(unit_3211),
+                    amp_deg=float(amp_deg),
+                )
+            )
+            > 0.0
+        )
     return False
 
 
@@ -109,13 +122,20 @@ def elevator_program_deg(
     *,
     doublet_amp_deg: float = 5.0,
     extra_t0: tuple[float, ...] = (),
+    t0_3211: float = 10.0,
+    unit_3211: float = 1.0,
 ) -> float:
     if kind == "doublet":
         return elevator_doublet_deg(
             time, amp_deg=float(doublet_amp_deg), extra_t0=extra_t0
         )
     if kind == "3211":
-        return elevator_3211_deg(time)
+        return elevator_3211_deg(
+            time,
+            t0=float(t0_3211),
+            unit=float(unit_3211),
+            amp_deg=float(doublet_amp_deg),
+        )
     return 0.0
 
 
@@ -131,6 +151,8 @@ def autopilot(
     elevator_maneuver: str | None = None,
     elevator_doublet_amp_deg: float = 5.0,
     elevator_extra_t0: tuple[float, ...] = (),
+    elevator_3211_t0: float = 10.0,
+    elevator_3211_unit: float = 1.0,
 ):
     """
     Управление u = [δT, δV, δN, δE].
@@ -149,7 +171,12 @@ def autopilot(
     )
 
     if elevator_maneuver_active(
-        time, elevator_maneuver, extra_t0=elevator_extra_t0
+        time,
+        elevator_maneuver,
+        extra_t0=elevator_extra_t0,
+        amp_deg=float(elevator_doublet_amp_deg),
+        t0_3211=float(elevator_3211_t0),
+        unit_3211=float(elevator_3211_unit),
     ):
         # не гасим вход: только trim + программа
         U[1] = float(u0[1]) + elevator_program_deg(
@@ -157,6 +184,8 @@ def autopilot(
             elevator_maneuver,
             doublet_amp_deg=float(elevator_doublet_amp_deg),
             extra_t0=elevator_extra_t0,
+            t0_3211=float(elevator_3211_t0),
+            unit_3211=float(elevator_3211_unit),
         )
 
     return np.clip(U, UMIN, UMAX)

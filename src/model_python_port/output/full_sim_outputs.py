@@ -259,6 +259,178 @@ def plot_ofk_error_with_posterior_three_sigma(data, out_dir=None, *, out_path=No
     print(f"Plot saved to {outp}")
 
 
+def plot_doublet_altitude_airspeed(
+    data,
+    out_dir=None,
+    *,
+    t0: float = 10.0,
+    pulse: float = 2.5,
+    t_pad: float = 15.0,
+):
+    """
+    Ответ ЛА на doublet руля высоты: высота и воздушная скорость (истина FX1).
+
+    Сохраняет:
+      - doublet_altitude.png
+      - doublet_airspeed.png
+      - doublet_h_V_response.png (сводный: δe, h, V)
+    """
+    base = Path(out_dir or ".")
+    base.mkdir(parents=True, exist_ok=True)
+
+    t = np.asarray(data["time"], dtype=float)
+    h = np.asarray(data["true_h"], dtype=float)
+    if "true_V" in data:
+        v = np.asarray(data["true_V"], dtype=float)
+    else:
+        v = np.sqrt(
+            np.asarray(data["true_vn"], dtype=float) ** 2
+            + np.asarray(data["true_ve"], dtype=float) ** 2
+            + np.asarray(data["true_vh"], dtype=float) ** 2
+        )
+    u = np.asarray(data["u"], dtype=float)
+    de = u[1] if u.ndim == 2 and u.shape[0] >= 2 else np.zeros_like(t)
+
+    t_end = float(t0) + 2.0 * float(pulse) + float(t_pad)
+    mask = (t >= max(0.0, float(t0) - 5.0)) & (t <= min(float(t[-1]), t_end))
+    if not np.any(mask):
+        mask = np.ones_like(t, dtype=bool)
+
+    tm, hm, vm, dem = t[mask], h[mask], v[mask], de[mask]
+    man_lo, man_hi = float(t0), float(t0) + 2.0 * float(pulse)
+
+    def _shade(ax):
+        ax.axvspan(man_lo, man_hi, color="0.85", alpha=0.7, label="doublet $\\pm 5^\\circ$")
+        ax.grid(True, alpha=0.3)
+
+    fig_h, ax_h = plt.subplots(figsize=(9, 3.6))
+    _shade(ax_h)
+    ax_h.plot(tm, hm, "b-", lw=1.4, label=r"$h$ (FX1)")
+    ax_h.set_xlabel("Время (с)")
+    ax_h.set_ylabel("м")
+    ax_h.set_title(r"Высота при doublet руля высоты ($+5^\circ$, затем $-5^\circ$)")
+    ax_h.legend(loc="best", fontsize=9)
+    fig_h.tight_layout()
+    path_h = base / "doublet_altitude.png"
+    fig_h.savefig(path_h, dpi=150)
+    plt.close(fig_h)
+    print(f"Plot saved to {path_h}")
+
+    fig_v, ax_v = plt.subplots(figsize=(9, 3.6))
+    _shade(ax_v)
+    ax_v.plot(tm, vm, "g-", lw=1.4, label=r"$V$ (FX1)")
+    ax_v.set_xlabel("Время (с)")
+    ax_v.set_ylabel("м/с")
+    ax_v.set_title(r"Воздушная скорость при doublet руля высоты ($+5^\circ$, затем $-5^\circ$)")
+    ax_v.legend(loc="best", fontsize=9)
+    fig_v.tight_layout()
+    path_v = base / "doublet_airspeed.png"
+    fig_v.savefig(path_v, dpi=150)
+    plt.close(fig_v)
+    print(f"Plot saved to {path_v}")
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 7.2), sharex=True)
+    for ax in axes:
+        _shade(ax)
+    axes[0].plot(tm, dem, color="steelblue", lw=1.3)
+    axes[0].set_ylabel(r"$\delta_e$, °")
+    axes[0].set_title(r"Ответ ЛА на doublet: руль, высота, скорость")
+    axes[1].plot(tm, hm, "b-", lw=1.3)
+    axes[1].set_ylabel(r"$h$, м")
+    axes[2].plot(tm, vm, "g-", lw=1.3)
+    axes[2].set_ylabel(r"$V$, м/с")
+    axes[2].set_xlabel("Время (с)")
+    axes[0].legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    path_c = base / "doublet_h_V_response.png"
+    fig.savefig(path_c, dpi=150)
+    plt.close(fig)
+    print(f"Plot saved to {path_c}")
+    return path_h, path_v, path_c
+
+
+def plot_doublet_alpha_q_theta(
+    data,
+    out_dir=None,
+    *,
+    t0: float = 10.0,
+    pulse: float = 2.5,
+    t_pad: float = 15.0,
+):
+    """
+    Ответ ЛА на doublet: угол атаки, угловая скорость тангажа q, угол тангажа.
+
+    Сохраняет отдельные png и сводный doublet_alpha_q_theta.png.
+    """
+    base = Path(out_dir or ".")
+    base.mkdir(parents=True, exist_ok=True)
+
+    t = np.asarray(data["time"], dtype=float)
+    alpha_deg = np.degrees(np.asarray(data["true_alpha"], dtype=float))
+    q_deg_s = np.degrees(np.asarray(data["true_q"], dtype=float))
+    if "true_theta" in data:
+        theta_deg = np.degrees(np.asarray(data["true_theta"], dtype=float))
+    else:
+        # запасной путь: ofk2_true_aq[3] = x[8]
+        t2 = np.asarray(data["ofk2_time"], dtype=float)
+        th = np.asarray(data["ofk2_true_aq"][3], dtype=float)
+        theta_deg = np.degrees(np.interp(t, t2, th))
+
+    t_end = float(t0) + 2.0 * float(pulse) + float(t_pad)
+    mask = (t >= max(0.0, float(t0) - 5.0)) & (t <= min(float(t[-1]), t_end))
+    if not np.any(mask):
+        mask = np.ones_like(t, dtype=bool)
+
+    tm = t[mask]
+    am, qm, thm = alpha_deg[mask], q_deg_s[mask], theta_deg[mask]
+    man_lo, man_hi = float(t0), float(t0) + 2.0 * float(pulse)
+
+    def _shade(ax):
+        ax.axvspan(man_lo, man_hi, color="0.85", alpha=0.7, label="doublet $\\pm 5^\\circ$")
+        ax.grid(True, alpha=0.3)
+
+    specs = [
+        ("doublet_alpha.png", am, r"$\alpha$, °", r"Угол атаки при doublet ($+5^\circ$, затем $-5^\circ$)", "C1"),
+        ("doublet_q.png", qm, r"$q$, °/с", r"Угловая скорость тангажа $q$ при doublet", "C3"),
+        ("doublet_theta.png", thm, r"$\vartheta$, °", r"Угол тангажа при doublet", "C0"),
+    ]
+    paths = []
+    for fname, y, ylab, title, color in specs:
+        fig, ax = plt.subplots(figsize=(9, 3.6))
+        _shade(ax)
+        ax.plot(tm, y, color=color, lw=1.4, label=ylab.split(",")[0])
+        ax.set_xlabel("Время (с)")
+        ax.set_ylabel(ylab)
+        ax.set_title(title)
+        ax.legend(loc="best", fontsize=9)
+        fig.tight_layout()
+        path = base / fname
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        print(f"Plot saved to {path}")
+        paths.append(path)
+
+    fig, axes = plt.subplots(3, 1, figsize=(9, 7.2), sharex=True)
+    for ax in axes:
+        _shade(ax)
+    axes[0].plot(tm, am, color="C1", lw=1.3)
+    axes[0].set_ylabel(r"$\alpha$, °")
+    axes[0].set_title(r"Ответ ЛА на doublet: $\alpha$, $q$, $\vartheta$")
+    axes[1].plot(tm, qm, color="C3", lw=1.3)
+    axes[1].set_ylabel(r"$q$, °/с")
+    axes[2].plot(tm, thm, color="C0", lw=1.3)
+    axes[2].set_ylabel(r"$\vartheta$, °")
+    axes[2].set_xlabel("Время (с)")
+    axes[0].legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    path_c = base / "doublet_alpha_q_theta.png"
+    fig.savefig(path_c, dpi=150)
+    plt.close(fig)
+    print(f"Plot saved to {path_c}")
+    paths.append(path_c)
+    return tuple(paths)
+
+
 def plot_control_vector_deflections(
     data,
     out_path=None,
@@ -349,7 +521,11 @@ def print_bins_gnss_simulation_tables(data):
 
 def print_ofk2_coeff_table(data, index: int = -1) -> None:
     """Итоговая таблица L*,M*: теория | ОФК-2 | Δ."""
-    from ..filtering.ofk2_theory import PARAM_NAMES
+    from ..filtering.ofk2_theory import (
+        ESTIMATED_PARAM_INDICES,
+        FROZEN_PARAM_INDICES,
+        PARAM_NAMES,
+    )
 
     th = data.get("sp_theory", {})
     i = index if index >= 0 else len(data["time"]) - 1
@@ -357,8 +533,9 @@ def print_ofk2_coeff_table(data, index: int = -1) -> None:
     th_vec = np.asarray(data.get("sp_theory_vec", []), dtype=float)
     ekf = np.asarray(data["sp_params"][:, i], dtype=float)
     dlt = np.asarray(data["d_params"][:, i], dtype=float)
+    est_names = ", ".join(PARAM_NAMES[k] for k in ESTIMATED_PARAM_INDICES)
     print(f"\n{'='*72}")
-    print(f"ОФК-2: короткопериод [{', '.join(PARAM_NAMES)}]  t = {t:.1f} с")
+    print(f"ОФК-2: оцениваются [{est_names}]  t = {t:.1f} с")
     if th:
         print(
             f"trim  α0={th.get('alpha0', float('nan')):.4f}  "
@@ -369,13 +546,16 @@ def print_ofk2_coeff_table(data, index: int = -1) -> None:
     print(f"{'параметр':<10s}  {'теория':>14s}  {'ОФК-2':>14s}  {'Δ':>14s}")
     print("-" * 72)
     mae = 0.0
-    for k, name in enumerate(PARAM_NAMES):
+    for k in ESTIMATED_PARAM_INDICES:
+        name = PARAM_NAMES[k]
         th_v = float(th_vec[k]) if th_vec.size > k else float("nan")
         print(f"{name:<10s}  {th_v:14.6f}  {float(ekf[k]):14.6f}  {float(dlt[k]):14.3e}")
         mae += abs(float(dlt[k]))
-    mae /= max(len(PARAM_NAMES), 1)
+    mae /= max(len(ESTIMATED_PARAM_INDICES), 1)
     print("-" * 72)
-    print(f"MAE(|Δ|) = {mae:.6f}")
+    frozen = ", ".join(PARAM_NAMES[k] for k in FROZEN_PARAM_INDICES)
+    print(f"заморожены (trim): {frozen}")
+    print(f"MAE(|Δ|) по оцениваемым = {mae:.6f}")
     print("=" * 72)
 
 
@@ -415,7 +595,7 @@ def plot_ofk2_identified_params(data, out_path=None):
     axes[-1, 0].set_xlabel("Время (с)")
     axes[-1, 1].set_xlabel("Время (с)")
     fig.suptitle(
-        "ОФК-2 short-period: Lα, Lq, Lδe, Mα, Mq, Mδe (оценка vs теория)",
+        "ОФК-2: L*, M*, X*, Θ* (оценка vs теория)",
         fontsize=12,
     )
     plt.tight_layout()
@@ -425,24 +605,24 @@ def plot_ofk2_identified_params(data, out_path=None):
 
 
 def plot_ofk2_params_time(data, out_path=None):
-    """Один PNG: отдельная панель на каждый L*/M* (оценка vs теория во времени)."""
-    from ..filtering.ofk2_theory import PARAM_NAMES
+    """Один PNG: только оцениваемые коэффициенты (без замороженных нулей)."""
+    from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
 
     t = np.asarray(data["ofk2_time"], dtype=float)
     path = Path(out_path or "ofk2_params_time.png")
     th_trim = np.asarray(data.get("sp_theory_vec_trim", []), dtype=float)
     th_t = np.asarray(data["ofk2_theory"], dtype=float)
     ekf = np.asarray(data["ofk2_params"], dtype=float)
-    start_err = 100.0 * float(data.get("coeff_start_err", 0.0))
-    n = len(PARAM_NAMES)
-    ncols = 2
+    names = REPORT_PARAM_NAMES
+    idxs = REPORT_PARAM_INDICES
+    n = len(names)
+    ncols = 3
     nrows = int(np.ceil(n / ncols))
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 2.8 * nrows), sharex=True)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 2.35 * nrows), sharex=True)
     axes_flat = np.atleast_1d(axes).ravel()
 
-    for k, name in enumerate(PARAM_NAMES):
-        ax = axes_flat[k]
+    for ax, k, name in zip(axes_flat, idxs, names):
         ax.plot(t, ekf[k], color="C0", lw=1.5, label="ОФК-2")
         ax.plot(t, th_t[k], color="k", lw=1.2, label="теория FX1(t)")
         t_step = data.get("aero_step_t")
@@ -453,12 +633,17 @@ def plot_ofk2_params_time(data, out_path=None):
                 th_trim[k], color="darkorange", ls="--", lw=1.1,
                 label="теория на балансировке",
             )
-            ax.plot(
-                t[0], ekf[k, 0], "o", color="C3", ms=6,
-                label=f"старт (+{start_err:.0f}%)",
-            )
-        # для малых коэффициентов (Lθ, Mθ, Lv, Mv) — масштаб по данным
-        if max(abs(th_trim[k]), float(np.max(np.abs(ekf[k]))), float(np.max(np.abs(th_t[k])))) < 0.02:
+            th0 = float(th_trim[k])
+            x0 = float(ekf[k, 0])
+            if abs(th0) < 1e-9:
+                start_lbl = f"старт ({x0:+.2g}, эталон≈0)"
+            else:
+                pct = 100.0 * (x0 / th0 - 1.0)
+                start_lbl = f"старт ({pct:+.0f}%)"
+            ax.plot(t[0], x0, "o", color="C3", ms=6, label=start_lbl)
+        if max(abs(th_trim[k] if th_trim.size > k else 0.0),
+               float(np.max(np.abs(ekf[k]))),
+               float(np.max(np.abs(th_t[k])))) < 0.02:
             yc = np.concatenate([ekf[k], th_t[k], [th_trim[k]]])
             pad = max(0.0003, 0.15 * float(np.ptp(yc)) if np.ptp(yc) > 0 else 0.001)
             mid = float(np.median(yc))
@@ -475,7 +660,7 @@ def plot_ofk2_params_time(data, out_path=None):
         ax.set_xlabel("Время (с)")
 
     fig.suptitle(
-        "ОФК-2 short-period: L*, M* во времени "
+        "ОФК-2: оцениваемые L*, M*, X*, Θ* "
         "(синяя — оценка, чёрная — эталон FX1(t), оранжевая — балансировка)",
         fontsize=12,
     )
@@ -548,8 +733,8 @@ def _plot_ofk2_error_three_sigma_panels(
     out_path: Path,
     band_color: str = "mediumpurple",
     line_color: str = "darkblue",
-    band_label: str = r"$\pm 3\sigma$",
-    line_label: str = r"$\Delta$",
+    band_label: str = "±3σ",
+    line_label: str = "Δ",
 ):
     fig, axes = plt.subplots(len(param_names), 1, figsize=(12, 2.2 * len(param_names)), sharex=True)
     axes = np.atleast_1d(axes)
@@ -575,7 +760,7 @@ def _plot_ofk2_error_three_sigma_panels(
 
 
 def plot_ofk2_error_with_posterior_three_sigma(data, out_dir=None):
-    """ОФК-2 (новая модель): Δ = θ̂ − θ_trim и полосы ±3σ (без Lθ, Mθ)."""
+    """ОФК-2: Δ = оценка − trim и полосы ±3σ (оцениваемые коэффициенты)."""
     from ..filtering.ofk2_theory import REPORT_PARAM_INDICES, REPORT_PARAM_NAMES
 
     t = np.asarray(data["ofk2_time"], dtype=float)
@@ -595,7 +780,7 @@ def plot_ofk2_error_with_posterior_three_sigma(data, out_dir=None):
         REPORT_PARAM_INDICES,
         title="ОФК-2 (новая модель): ошибка параметров и полосы ±3σ",
         out_path=base / "ofk2_error_vs_three_sigma_P.png",
-        band_label=r"$\pm 3\sigma$ фильтра",
+        band_label="±3σ фильтра",
         line_label="ошибка: оценка − балансировка",
     )
 

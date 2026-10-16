@@ -7,7 +7,7 @@
         │                              ε=БИНС−ГНСС ──► ОФК-1   │
         │                              ◄── x̂,P (не в БИНС)     │
         └── δe ──┐                                             │
-                 └── NP−δ, ω−Δω̂, Cbn, a_m, δe ──► ОФК-2 (L*M*X*)
+                 └── NP−δ, ω−Δω̂, Cbn с БИНС, a−Δâ, δe ──► ОФК-2
 
 Что лежит в переменных
 ----------------------
@@ -22,8 +22,8 @@ np_gnss    ГНСС [φ, λ, h, Vn, Ve, Vh]
 z          невязка ОФК-1 = БИНС − ГНСС
 x_ofk, p_ofk     15 ошибок навигации и смещений, ковариация
 np_cons, w_cons  то же NP и ω, что отдаём потребителю (ОФК-2)
-sig        входы ОФК-2: α,V,θ,q,az,δe и отклонения от trim
-x_ofk2     15 коэффициентов L*, M*, X*
+sig        входы ОФК-2: α,V,θ (наклон траектории),q,az,δe и отклонения от trim
+x_ofk2     коэффициенты (15) + δα, δq, δV, δθ
 """
 
 from __future__ import annotations
@@ -56,21 +56,34 @@ from ..filtering.loosely_coupled_ofk import (
 )
 from ..filtering.ofk2_ekf import (
     G0,
+    I_DA,
+    I_DQ,
+    I_DTH,
+    I_DV,
+    _ABS_FLOOR,
     build_z_kinematics,
     ekf_step as ofk2_step,
     initial_covariance as ofk2_initial_covariance,
     initial_state as ofk2_initial_state,
     signals_from_sensors,
 )
-from ..filtering.ofk2_theory import ofk2_jacobian_at_trim, theory_vector
+from ..filtering.ofk2_theory import (
+    ESTIMATED_PARAM_INDICES,
+    FROZEN_PARAM_INDICES,
+    ofk2_jacobian_at_trim,
+    theory_vector,
+)
 
 
 def run_simulation(
     tmodel: float = 120.0,
     dt: float = 1e-3,
     dt_gnss: float = 0.1,
-    dt_ofk2: float = 0.02,
+    dt_ofk2: float = 0.1,
     elevator_doublet_amp_deg: float = 5.0,
+    elevator_maneuver: str | None = "doublet",
+    elevator_3211_t0: float = 10.0,
+    elevator_3211_unit: float = 1.0,
     ofk1_feedback: bool = True,
     coeff_start_err: float = 0.3,
     ofk2_start_scale: float | None = None,
@@ -83,7 +96,7 @@ def run_simulation(
     # ЭТАП 0. Старт (один раз)
     # Получаем: x, u, q, cbn, np_bins, x_ofk=0, P₀ ОФК-1, trim и x_ofk2.
     # ------------------------------------------------------------------
-    ELEVATOR_MANEUVER = "doublet"
+    ELEVATOR_MANEUVER = elevator_maneuver
     sim = initsim()
     la = dict(sim["la"])
     la["PAR"] = np.asarray(sim["la"]["PAR"], dtype=float).copy()
@@ -124,13 +137,22 @@ def run_simulation(
     else:
         _scale = float(ofk2_start_scale)
         _coeff_start_err = abs(_scale - 1.0)
-    x_ofk2 = ofk2_initial_state(th_vec * _scale)
+    # Стартовый сдвиг только у оцениваемых; Lv — сразу trim.
+    _abs_floor = _ABS_FLOOR
+    param0 = th_vec.copy()
+    for _i in ESTIMATED_PARAM_INDICES:
+        if abs(float(th_vec[_i])) < 1e-9:
+            param0[_i] = float(th_vec[_i]) + _coeff_start_err * float(_abs_floor[_i])
+        else:
+            param0[_i] = float(th_vec[_i]) * _scale
+    for _i in FROZEN_PARAM_INDICES:
+        param0[_i] = float(th_vec[_i])
+    x_ofk2 = ofk2_initial_state(param0)
     p_ofk2 = ofk2_initial_covariance(
-        th_vec * _scale, coeff_start_err=_coeff_start_err, scale_ref=th_vec
+        param0, coeff_start_err=_coeff_start_err, scale_ref=th_vec
     )
-    da_prev = None
-    q_prev = None
-    v_prev = None
+    ofk2_seeded = False
+    last_dde: float | None = None
     az0 = None
     alpha_gnss = 0.0
 
@@ -184,6 +206,8 @@ def run_simulation(
                 elevator_maneuver=ELEVATOR_MANEUVER,
                 elevator_doublet_amp_deg=float(elevator_doublet_amp_deg),
                 elevator_extra_t0=tuple(elevator_extra_t0),
+                elevator_3211_t0=float(elevator_3211_t0),
+                elevator_3211_unit=float(elevator_3211_unit),
             )
 
         # --------------------------------------------------------------
@@ -202,7 +226,7 @@ def run_simulation(
         # ЭТАП 4. ГНСС + ОФК-1, 10 Гц. В БИНС не пишем.
         # Вход ОФК-1: a_last, cbn, np_bins, z=БИНС−ГНСС, σ ГНСС.
         # Выход: x_ofk (15 дельт), p_ofk.
-        # Потребителю: np_cons = NP−δV/δr, w_cons = w_m−Δω̂.
+        # Потребителю: NP−δ, ω−Δω̂, Cbn с БИНС (без φ̂), a−Δâ.
         # --------------------------------------------------------------
         if (i + 1) % step_gnss == 0:
             np_gnss, v_gnss = gnss(
@@ -212,10 +236,10 @@ def run_simulation(
             x_ofk, p_ofk = ofk_step(
                 a_last, cbn, np_bins, z, x_ofk, p_ofk, v_gnss, dt_gnss
             )
-            np_cons, w_cons = consumer_outputs(
-                np_bins, w_m, x_ofk, feedback=ofk1_feedback
+            np_cons, w_cons, cbn_cons, a_cons = consumer_outputs(
+                np_bins, w_m, cbn, a_m, x_ofk, feedback=ofk1_feedback
             )
-            sig = signals_from_sensors(np_cons, cbn, w_cons, a_m, x[16], trim)
+            sig = signals_from_sensors(np_cons, cbn_cons, w_cons, a_cons, x[16], trim)
             alpha_gnss = sig.alpha
             if az0 is None:
                 az0 = sig.az
@@ -242,50 +266,53 @@ def run_simulation(
             )
 
         # --------------------------------------------------------------
-        # ЭТАП 5. ОФК-2, 50 Гц. x_ofk держим с последнего ГНСС.
-        # Вход sig: α,V из np_cons+cbn; q=w_cons[2]; θ из сырой cbn;
-        #           az сырой ДЛУ; δe из FX1 x[16].
-        # Выход: x_ofk2 — 15 коэффициентов L*, M*, X*.
+        # ЭТАП 5. ОФК-2, та же частота что ОФК-1 (10 Гц).
+        # Прогноз: интеграл α̇,q̇,V̇,θ̇. Коррекция: Z=[δα,δq,δV,δθ] после ОФК-1.
+        # Cbn — напрямую с БИНС (научрук: поправка φ̂ почти не даёт).
         # --------------------------------------------------------------
         if logs.gnss_idx > 0 and (i + 1) % step_ofk2 == 0:
-            np_cons, w_cons = consumer_outputs(
-                np_bins, w_m, x_ofk, feedback=ofk1_feedback
+            np_cons, w_cons, cbn_cons, a_cons = consumer_outputs(
+                np_bins, w_m, cbn, a_m, x_ofk, feedback=ofk1_feedback
             )
-            sig = signals_from_sensors(np_cons, cbn, w_cons, a_m, x[16], trim)
+            sig = signals_from_sensors(np_cons, cbn_cons, w_cons, a_cons, x[16], trim)
             if az0 is None:
                 az0 = sig.az
+            if not ofk2_seeded:
+                x_ofk2[I_DA] = sig.da
+                x_ofk2[I_DQ] = sig.dq
+                x_ofk2[I_DV] = sig.dv
+                x_ofk2[I_DTH] = sig.dtheta
+                ofk2_seeded = True
             z_ofk2 = build_z_kinematics(
-                sig.alpha, sig.q, sig.de, sig.v, sig.theta, sig.az, trim
+                sig.alpha, sig.q, sig.v, sig.theta, sig.de, trim
             )
             th_inst_vec = theory_vector(
                 ofk2_jacobian_at_trim(x, u, la, thetatr=float(sim["thetatr"]))
             )
+            if last_dde is None:
+                dde_dot = 0.0
+            else:
+                dde_dot = (float(sig.dde) - last_dde) / dt_ofk2
+            last_dde = float(sig.dde)
             (
                 x_ofk2,
                 p_ofk2,
                 innov_ofk2,
                 innov_prior_ofk2,
                 innov_std_ofk2,
-                da_prev,
-                q_prev,
             ) = ofk2_step(
                 x_ofk2,
                 p_ofk2,
                 da=sig.da,
-                q=sig.q,
-                dde=sig.dde,
+                dq=sig.dq,
                 dv=sig.dv,
-                dtheta=sig.dtheta,
-                az=sig.az,
-                v=sig.v,
-                az0=float(az0),
+                dde=sig.dde,
                 dt=dt_ofk2,
-                da_prev=da_prev,
-                q_prev=q_prev,
-                v_prev=v_prev,
+                dtheta=sig.dtheta,
+                dde_dot=dde_dot,
+                param_fixed=th_vec,
                 q_std=float(ofk2_q_std),
             )
-            v_prev = sig.v
             logs.write_ofk2(
                 t=t,
                 x=x,
@@ -296,7 +323,7 @@ def run_simulation(
                 innov_prior_sp=innov_prior_ofk2,
                 innov_std_sp=innov_std_ofk2,
                 da=sig.da,
-                q_meas=sig.q,
+                q_meas=sig.dq,
                 dde=sig.dde,
                 dv=sig.dv,
                 dtheta=sig.dtheta,
@@ -306,7 +333,7 @@ def run_simulation(
                     z_sp=z_ofk2,
                     innov_sp=innov_ofk2,
                     alpha_gnss=alpha_gnss,
-                    q_meas=sig.q,
+                    q_meas=sig.dq,
                     de_meas=sig.de,
                     az_meas=sig.az,
                     x_sp=x_ofk2,

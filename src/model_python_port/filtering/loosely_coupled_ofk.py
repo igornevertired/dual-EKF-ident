@@ -14,7 +14,9 @@
     13    δVh
     14    δh
 
-Поправки потребителю (ОФК-2): ``consumer_outputs`` = NP−δV/δr и ω−Δω̂.
+Поправки потребителю (ОФК-2): ``consumer_outputs`` =
+NP−δV/δr, ω−Δω̂, Cbn как у БИНС (без поправки φ̂), a−Δâ.
+Научрук: коррекция Cbn почти не повышает точность.
 """
 
 from __future__ import annotations
@@ -168,14 +170,37 @@ def correct_gyro_output(w_m: np.ndarray, x_corr: np.ndarray) -> np.ndarray:
     )
 
 
+def correct_accel_output(a_m: np.ndarray, x_corr: np.ndarray) -> np.ndarray:
+    """a для потребителей: ДЛУ минус оценка смещения ОФК-1. В БИНС не идёт."""
+    return np.asarray(a_m, dtype=float).reshape(3) - np.asarray(
+        x_corr[7:10], dtype=float
+    )
+
+
 def consumer_outputs(
     np_bins: np.ndarray,
     w_m: np.ndarray,
+    cbn: np.ndarray,
+    a_m: np.ndarray,
     x_ofk: np.ndarray,
     *,
     feedback: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    """NP и ω, которые видит ОФК-2. БИНС не меняется."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """NP, ω, Cbn и a, которые видит ОФК-2. БИНС не меняется.
+
+    Cbn — сырой с БИНС (научрук: поправка φ̂ почти не даёт).
+    """
+    cbn_out = np.asarray(cbn, dtype=float).copy()
     if feedback:
-        return correct_nav_output(np_bins, x_ofk), correct_gyro_output(w_m, x_ofk)
-    return np.asarray(np_bins, dtype=float).copy(), np.asarray(w_m, dtype=float).reshape(3)
+        return (
+            correct_nav_output(np_bins, x_ofk),
+            correct_gyro_output(w_m, x_ofk),
+            cbn_out,
+            correct_accel_output(a_m, x_ofk),
+        )
+    return (
+        np.asarray(np_bins, dtype=float).copy(),
+        np.asarray(w_m, dtype=float).reshape(3),
+        np.asarray(cbn, dtype=float).copy(),
+        np.asarray(a_m, dtype=float).reshape(3).copy(),
+    )

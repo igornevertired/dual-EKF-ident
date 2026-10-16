@@ -5,7 +5,11 @@ from __future__ import annotations
 import numpy as np
 
 from ..filtering.ofk2_ekf import N_MEAS, N_PARAM
-from ..filtering.ofk2_theory import PARAM_NAMES, coeff_delta_ekf_minus_theory
+from ..filtering.ofk2_theory import (
+    PARAM_NAMES,
+    coeff_delta_ekf_minus_theory,
+    path_angle_from_x,
+)
 
 
 def _alloc_gnss_log(n_gnss: int) -> dict[str, np.ndarray]:
@@ -14,6 +18,7 @@ def _alloc_gnss_log(n_gnss: int) -> dict[str, np.ndarray]:
     log: dict[str, np.ndarray] = {
         "time": z(n_gnss),
         "true_h": z(n_gnss),
+        "true_V": z(n_gnss),
         "true_fi": z(n_gnss),
         "true_lam": z(n_gnss),
         "true_vn": z(n_gnss),
@@ -62,10 +67,11 @@ def _alloc_gnss_log(n_gnss: int) -> dict[str, np.ndarray]:
         "sp_az": z(n_gnss),
         "sp_params": z((N_PARAM, n_gnss)),
         "sp_delta": z((N_MEAS, n_gnss)),
-        "sp_z": z((6, n_gnss)),
+        "sp_z": z((N_MEAS, n_gnss)),
         "z_nav": z((6, n_gnss)),
         "true_alpha": z(n_gnss),
         "true_q": z(n_gnss),
+        "true_theta": z(n_gnss),
         "true_az": z(n_gnss),
         "d_params": z((N_PARAM, n_gnss)),
         "d_params_trim": z((N_PARAM, n_gnss)),
@@ -78,7 +84,7 @@ def _alloc_gnss_log(n_gnss: int) -> dict[str, np.ndarray]:
 
 
 class SimLogs:
-    """Два буфера: 10 Гц (ГНСС/ОФК-1) и 50 Гц (ОФК-2)."""
+    """Два буфера: ГНСС/ОФК-1 и ОФК-2 (частота как у ОФК-1)."""
 
     def __init__(self, n_gnss: int, n_ofk2_max: int):
         self.gnss_idx = 0
@@ -94,7 +100,7 @@ class SimLogs:
         self.ofk2_innov_prior = np.full((N_MEAS, n), np.nan)
         self.ofk2_innov_std = np.full((N_MEAS, n), np.nan)
         self.ofk2_reg = np.zeros((5, n))
-        self.ofk2_true_aq = np.zeros((4, n))
+        self.ofk2_true_aq = np.zeros((5, n))
 
     def write_gnss(
         self,
@@ -118,6 +124,7 @@ class SimLogs:
         log = self.log
         log["time"][i] = t
         log["true_h"][i] = x[10]
+        log["true_V"][i] = float(np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2))
         log["true_fi"][i] = x[12]
         log["true_lam"][i] = x[13]
         log["true_vn"][i] = v_nav[0]
@@ -161,6 +168,7 @@ class SimLogs:
         log["err_ofk_vh"][i] = nper_post[1]
         log["true_alpha"][i] = true_alpha
         log["true_q"][i] = true_q
+        log["true_theta"][i] = float(x[8])
         log["true_az"][i] = true_az
         log["u"][:, i] = u
         log["z_nav"][:, i] = z
@@ -187,7 +195,7 @@ class SimLogs:
         self.ofk2_time[k] = t
         self.ofk2_params[:, k] = x_sp[:N_PARAM]
         self.ofk2_theory[:, k] = th_inst_vec
-        self.ofk2_std[:, k] = np.sqrt(np.diag(p_sp))
+        self.ofk2_std[:, k] = np.sqrt(np.diag(p_sp)[:N_PARAM])
         self.ofk2_d_params[:, k] = x_sp[:N_PARAM] - th_inst_vec
         self.ofk2_d_params_trim[:, k] = x_sp[:N_PARAM] - th_vec
         self.ofk2_innov_prior[:, k] = innov_prior_sp
@@ -199,6 +207,7 @@ class SimLogs:
         self.ofk2_true_aq[1, k] = x[5]
         self.ofk2_true_aq[2, k] = np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2)
         self.ofk2_true_aq[3, k] = x[8]
+        self.ofk2_true_aq[4, k] = path_angle_from_x(x)
         self.ofk2_idx = k + 1
 
     def write_ofk2_on_last_gnss(
@@ -219,7 +228,7 @@ class SimLogs:
             return
         j = self.gnss_idx - 1
         log = self.log
-        std_sp = np.sqrt(np.diag(p_sp))
+        std_sp = np.sqrt(np.diag(p_sp)[:N_PARAM])
         log["sp_z"][:, j] = z_sp
         log["sp_delta"][:, j] = innov_sp
         log["sp_alpha"][j] = alpha_gnss

@@ -1,19 +1,31 @@
 """
-Теоретические L*, M*, X* для ОФК-2 (продольная модель, 5 ДУ).
+ОФК-2 — в точности система (15).
 
-Линеаризация FX1 в точке балансировки::
+    ΔV̇  = −a11 ΔV − a12 Δα − a13 Δθ − b11 δB
+    Δα̇  = −a21 ΔV − a22 Δα − a23 Δθ + Δωz + b21 δB
+    Δθ̇  =  a31 ΔV + a32 Δα + a33 Δθ + b31 δB
+    Δω̇z = −(a41−a′42 a31) ΔV − (a42−a′42 a32) Δα
+          + a′42 a33 Δθ − (a44+a′42) Δωz
+          + (b41−a′42 b31) δB + b′41 δ̇B
 
-    α̇ = Lα·δα + Lq·q + Lδe·δδe + Lv·δV + Lθ·δθ
-    q̇ = Mα·δα + Mq·q + Mδe·δδe + Mv·δV + Mθ·δθ
-    V̇ = Xα·δα + Xq·q + Xδe·δδe + Xv·δV + Xθ·δθ
-    θ̇ = q
-    ḣ = V sin(θ−α)
+Переобозначения (то, что оценивает EKF)::
+
+    Xv=−a11, Xα=−a12, Xθ=−a13, Xδe=−b11
+    Lv=−a21, Lα=−a22, Lθ=−a23, Lq=+1, Lδe=b21
+    Θv=a31, Θα=a32, Θθ=a33, Θδe=b31
+    Mv=−(a41−a′42 a31), Mα=−(a42−a′42 a32),
+    Mθ=a′42 a33, Mq=−(a44+a′42),
+    Mδe=(b41−a′42 b31), Mδė=b′41
+
+θ — угол наклона траектории, sinθ = Vy/√(Vx²+Vz²) из ОФК-1.
+Xq в (15) нет. p в 3-й строке поглощён в b31.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+from ..dynamics.fx1 import c_gb
 from ..dynamics.fx1 import fx1 as fx1_func
 
 PARAM_NAMES = (
@@ -27,29 +39,43 @@ PARAM_NAMES = (
     "Mδe",
     "Mv",
     "Mθ",
+    "Mδė",
     "Xα",
-    "Xq",
     "Xδe",
     "Xv",
     "Xθ",
+    "Θα",
+    "Θδe",
+    "Θv",
+    "Θθ",
 )
-# Слабонаблюдаемые Lθ, Mθ, Xθ в модели остаются, на отчётных графиках не жмут
-REPORT_PARAM_NAMES = (
-    "Lα",
-    "Lq",
-    "Lδe",
-    "Lv",
-    "Mα",
-    "Mq",
-    "Mδe",
-    "Mv",
-    "Xα",
-    "Xq",
-    "Xδe",
-    "Xv",
+# Научрук: мелкие игнорировать; Xα — с хорошей точностью.
+# Lq ≡ 1 (член +Δωz). Xθ ≈ −g — известная тяжесть, иначе путается с Xα.
+# Lv, Lθ, Mv, Mθ, Mδė, Xv, Θδe, Θv, Θθ — малы в trim, константы.
+FROZEN_PARAM_INDICES = (1, 3, 4, 8, 9, 10, 13, 14, 16, 17, 18)
+ESTIMATED_PARAM_INDICES = tuple(
+    i for i in range(len(PARAM_NAMES)) if i not in FROZEN_PARAM_INDICES
 )
-REPORT_PARAM_INDICES = tuple(PARAM_NAMES.index(n) for n in REPORT_PARAM_NAMES)
-N_REG = 5
+REPORT_PARAM_INDICES = ESTIMATED_PARAM_INDICES
+REPORT_PARAM_NAMES = tuple(PARAM_NAMES[i] for i in REPORT_PARAM_INDICES)
+
+N_L = 5
+N_M = 6
+N_X = 4
+N_TH = 4
+
+
+def path_angle_from_nav(vn: float, vh: float, ve: float) -> float:
+    """Угол наклона траектории: sinθ = Vy / √(Vx²+Vz²). NP: Vx=Vn, Vy=Vh, Vz=Ve."""
+    horiz = float(np.sqrt(vn * vn + ve * ve))
+    horiz = max(horiz, 1e-12)
+    return float(np.arcsin(np.clip(vh / horiz, -1.0, 1.0)))
+
+
+def path_angle_from_x(x: np.ndarray) -> float:
+    cgb = c_gb(float(x[8]), float(x[6]), float(x[7]))
+    vg = cgb.T @ np.array([x[0], x[1], x[2]], dtype=float)
+    return path_angle_from_nav(float(vg[0]), float(vg[1]), float(vg[2]))
 
 
 def _alpha_from_x(x: np.ndarray) -> float:
@@ -57,14 +83,13 @@ def _alpha_from_x(x: np.ndarray) -> float:
     return float(-np.arctan2(vy, vx if abs(vx) > 1e-12 else 1e-12))
 
 
-def _set_alpha(x: np.ndarray, alpha: float, thetatr: float = 0.0) -> None:
+def _set_alpha(x: np.ndarray, alpha: float) -> None:
     v = float(np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2))
     v = max(v, 1e-9)
     beta = float(np.arcsin(np.clip(x[2] / v, -1.0, 1.0)))
     x[0] = v * np.cos(beta) * np.cos(alpha)
     x[1] = -v * np.cos(beta) * np.sin(alpha)
     x[2] = v * np.sin(beta)
-    x[8] = alpha + thetatr
 
 
 def _set_speed(x: np.ndarray, v_new: float) -> None:
@@ -73,7 +98,9 @@ def _set_speed(x: np.ndarray, v_new: float) -> None:
     x[0:3] *= float(v_new) / v_old
 
 
-def _long_rates(x: np.ndarray, u: np.ndarray, la: dict, t: float = 0.0) -> tuple[float, float, float]:
+def _long_rates(
+    x: np.ndarray, u: np.ndarray, la: dict, t: float = 0.0
+) -> tuple[float, float, float, float]:
     dx, _af, _w = fx1_func(x, u, t, la)
     vx, vy, vz = float(x[0]), float(x[1]), float(x[2])
     dvx, dvy, dvz = float(dx[0]), float(dx[1]), float(dx[2])
@@ -82,7 +109,10 @@ def _long_rates(x: np.ndarray, u: np.ndarray, la: dict, t: float = 0.0) -> tuple
     q_dot = float(dx[5])
     v = max(float(np.sqrt(vx * vx + vy * vy + vz * vz)), 1e-9)
     v_dot = (vx * dvx + vy * dvy + vz * dvz) / v
-    return alpha_dot, q_dot, v_dot
+    dt_fd = 1.0e-5
+    x1 = np.asarray(x, dtype=float) + dt_fd * np.asarray(dx, dtype=float)
+    th_dot = (path_angle_from_x(x1) - path_angle_from_x(x)) / dt_fd
+    return alpha_dot, q_dot, v_dot, th_dot
 
 
 def ofk2_jacobian_at_trim(
@@ -97,6 +127,7 @@ def ofk2_jacobian_at_trim(
     d_v: float = 0.05,
     d_theta: float = 1.0e-4,
 ) -> dict[str, float]:
+    del thetatr
     x_base = np.asarray(x0, dtype=float).copy()
     u_base = np.asarray(u0, dtype=float).copy()
 
@@ -105,7 +136,7 @@ def ofk2_jacobian_at_trim(
     de0_rad = float(x_base[16]) * np.pi / 180.0
     v0 = float(np.linalg.norm(x_base[0:3]))
     v0 = max(v0, 1.0)
-    theta0 = float(x_base[8])
+    theta0 = path_angle_from_x(x_base)
 
     def eval_at(
         alpha: float,
@@ -113,12 +144,12 @@ def ofk2_jacobian_at_trim(
         de_rad: float,
         v_mag: float,
         theta: float,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         x = x_base.copy()
         u = u_base.copy()
-        _set_alpha(x, alpha, thetatr)
+        _set_alpha(x, alpha)
         _set_speed(x, v_mag)
-        x[8] = theta
+        x[8] = alpha + theta
         x[5] = q
         de_deg = de_rad * 180.0 / np.pi
         x[16] = de_deg
@@ -132,7 +163,7 @@ def ofk2_jacobian_at_trim(
         dde_: float,
         dv_: float,
         dth_: float,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         if arg == "alpha":
             hi = (a0 + da_, q0, de0_rad, v0, theta0)
             lo = (a0 - da_, q0, de0_rad, v0, theta0)
@@ -155,23 +186,24 @@ def ofk2_jacobian_at_trim(
             step = d_theta
         else:
             raise ValueError(arg)
-        adot_p, qdot_p, vdot_p = eval_at(*hi)
-        adot_m, qdot_m, vdot_m = eval_at(*lo)
+        ap, qp, vp, tp = eval_at(*hi)
+        am, qm, vm, tm = eval_at(*lo)
         den = 2.0 * step
         return (
-            (adot_p - adot_m) / den,
-            (qdot_p - qdot_m) / den,
-            (vdot_p - vdot_m) / den,
+            (ap - am) / den,
+            (qp - qm) / den,
+            (vp - vm) / den,
+            (tp - tm) / den,
         )
 
-    la_, ma_, xa_ = deriv_wrt("alpha", d_alpha, d_q, d_de_rad, d_v, d_theta)
-    lq_, mq_, xq_ = deriv_wrt("q", d_alpha, d_q, d_de_rad, d_v, d_theta)
-    lde_, mde_, xde_ = deriv_wrt("de", d_alpha, d_q, d_de_rad, d_v, d_theta)
-    lv_, mv_, xv_ = deriv_wrt("v", d_alpha, d_q, d_de_rad, d_v, d_theta)
-    lth_, mth_, xth_ = deriv_wrt("theta", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    la_, ma_, xa_, ta_ = deriv_wrt("alpha", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lq_, mq_, xq_, tq_ = deriv_wrt("q", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lde_, mde_, xde_, tde_ = deriv_wrt("de", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lv_, mv_, xv_, tv_ = deriv_wrt("v", d_alpha, d_q, d_de_rad, d_v, d_theta)
+    lth_, mth_, xth_, tth_ = deriv_wrt("theta", d_alpha, d_q, d_de_rad, d_v, d_theta)
 
-    adot0, qdot0, vdot0 = eval_at(a0, q0, de0_rad, v0, theta0)
-    gamma0 = theta0 - a0
+    adot0, qdot0, vdot0, tdot0 = eval_at(a0, q0, de0_rad, v0, theta0)
+    del xq_, tq_
 
     return {
         "alpha0": a0,
@@ -183,6 +215,7 @@ def ofk2_jacobian_at_trim(
         "alpha_dot0": adot0,
         "q_dot0": qdot0,
         "v_dot0": vdot0,
+        "theta_dot0": tdot0,
         "L_alpha": float(la_),
         "L_q": float(lq_),
         "L_de": float(lde_),
@@ -193,15 +226,15 @@ def ofk2_jacobian_at_trim(
         "M_de": float(mde_),
         "M_v": float(mv_),
         "M_theta": float(mth_),
+        "M_dedot": 0.0,
         "X_alpha": float(xa_),
-        "X_q": float(xq_),
         "X_de": float(xde_),
         "X_v": float(xv_),
         "X_theta": float(xth_),
-        "Theta_q": 1.0,
-        "H_alpha": float(-v0 * np.cos(gamma0)),
-        "H_theta": float(v0 * np.cos(gamma0)),
-        "H_v": float(np.sin(gamma0)),
+        "T_alpha": float(ta_),
+        "T_de": float(tde_),
+        "T_v": float(tv_),
+        "T_theta": float(tth_),
     }
 
 
@@ -218,11 +251,15 @@ def theory_vector(th: dict[str, float]) -> np.ndarray:
             th["M_de"],
             th["M_v"],
             th["M_theta"],
+            th["M_dedot"],
             th["X_alpha"],
-            th["X_q"],
             th["X_de"],
             th["X_v"],
             th["X_theta"],
+            th["T_alpha"],
+            th["T_de"],
+            th["T_v"],
+            th["T_theta"],
         ],
         dtype=float,
     )

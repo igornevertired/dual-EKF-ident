@@ -11,7 +11,7 @@ navigation/bins_common.py            БИНС: bins_step(a_m, w_m)
 filtering/loosely_coupled_ofk.py     ОФК-1 (шаг КФ)
 filtering/bins_ofk_2ch.py            ОФК-1: F, G, H, Q
 filtering/ofk2_ekf.py                ОФК-2 (шаг EKF)
-filtering/ofk2_theory.py             ОФК-2: эталонные L*, M*, X*
+filtering/ofk2_theory.py             ОФК-2: эталонные L*, M*, X*, Θ*
 simulation/bins_gnss_simulation.py   цикл 1 мс, этапы 0–5
 simulation/initsim.py                старт ЛА / БИНС
 output/full_sim_outputs.py           таблицы и графики

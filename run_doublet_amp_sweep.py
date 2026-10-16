@@ -35,7 +35,7 @@ if __name__ == "__main__":
             tmodel=60.0,
             dt=1e-3,
             dt_gnss=0.1,
-            dt_ofk2=0.02,
+            dt_ofk2=0.1,
             elevator_doublet_amp_deg=float(amp),
         )
         print_ofk2_coeff_table(data)
