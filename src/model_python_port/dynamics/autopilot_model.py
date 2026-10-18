@@ -1,20 +1,24 @@
 """
-Автопилот номинальной траектории (порты VHHOLD.m, HEADINGHOLD.m, AUTOPILOT.m).
+Автопилот номинальной траектории (порты VHHOLD.m, HEADINGHOLD.m, AUTOPILOT.m)
+и подмешивание программы идентификационного манёвра.
 
-Опционально: программа манёвра руля высоты для идентификации (ОФК-2).
-На интервале манёвра канал δV автопилота замораживается — не гасит вход.
+На интервале манёвра рулём канал руля высоты автопилота отключён — он не гасит
+вход; на интервале манёвра РУД (или фиксации РУД) отключён автомат тяги.
+Сами программы манёвров описаны в ``maneuvers.py``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-UMAX = np.array([0.85, 30.0, 25.0, 25.0])
+from .maneuvers import Maneuver
+
+UMAX = np.array([0.85, 30.0, 25.0, 25.0])  # [δT, δв (°), δн (°), δэ (°)]
 UMIN = np.array([0.1, -25.0, -25.0, -25.0])
 
 
 def vh_hold(x, dx, htr, vtr, tettr):
-    """Удержание высоты и скорости."""
+    """Удержание высоты и скорости: приращения РУД и руля высоты."""
     V = np.sqrt(x[0] ** 2 + x[1] ** 2 + x[2] ** 2)
     DV = np.sqrt(dx[0] ** 2 + dx[1] ** 2 + dx[2] ** 2)
     H = x[10]
@@ -32,7 +36,7 @@ def vh_hold(x, dx, htr, vtr, tettr):
 
 
 def heading_hold(x, time):
-    """Удержание курса."""
+    """Удержание курса: приращения руля направления и элеронов."""
     Wx, Wy = x[3], x[4]
     GAM, PSI = x[6], x[7]
 
@@ -49,119 +53,12 @@ def heading_hold(x, time):
     return dn, de
 
 
-def elevator_doublet_deg(
-    time: float,
-    *,
-    t0: float = 10.0,
-    pulse: float = 2.5,
-    amp_deg: float = 5.0,
-    extra_t0: tuple[float, ...] = (),
-) -> float:
-    """Doublet руля высоты, градусы: +amp / −amp. extra_t0 — дополнительные старты."""
-    t = float(time)
-    starts = (float(t0),) + tuple(float(x) for x in extra_t0)
-    for t_start in starts:
-        if t_start <= t < t_start + pulse:
-            return float(amp_deg)
-        if t_start + pulse <= t < t_start + 2.0 * pulse:
-            return float(-amp_deg)
-    return 0.0
-
-
-def elevator_3211_deg(
-    time: float,
-    *,
-    t0: float = 10.0,
-    unit: float = 1.0,
-    amp_deg: float = 3.0,
-) -> float:
-    """Вход 3-2-1-1 по рулю высоты, градусы."""
-    t = float(time) - float(t0)
-    if t < 0.0:
-        return 0.0
-    edges = [0.0, 3 * unit, 5 * unit, 6 * unit, 7 * unit]
-    signs = [+1.0, -1.0, +1.0, -1.0]
-    for k in range(4):
-        if edges[k] <= t < edges[k + 1]:
-            return float(signs[k] * amp_deg)
-    return 0.0
-
-
-def elevator_maneuver_active(
-    time: float,
-    kind: str | None,
-    *,
-    extra_t0: tuple[float, ...] = (),
-    amp_deg: float = 3.0,
-    t0_3211: float = 10.0,
-    unit_3211: float = 1.0,
-) -> bool:
-    """True на интервале, где программа δV ненулевая (или только что была)."""
-    if not kind:
-        return False
-    if kind == "doublet":
-        return abs(elevator_doublet_deg(time, extra_t0=extra_t0)) > 0.0
-    if kind == "3211":
-        return (
-            abs(
-                elevator_3211_deg(
-                    time,
-                    t0=float(t0_3211),
-                    unit=float(unit_3211),
-                    amp_deg=float(amp_deg),
-                )
-            )
-            > 0.0
-        )
-    return False
-
-
-def elevator_program_deg(
-    time: float,
-    kind: str | None,
-    *,
-    doublet_amp_deg: float = 5.0,
-    extra_t0: tuple[float, ...] = (),
-    t0_3211: float = 10.0,
-    unit_3211: float = 1.0,
-) -> float:
-    if kind == "doublet":
-        return elevator_doublet_deg(
-            time, amp_deg=float(doublet_amp_deg), extra_t0=extra_t0
-        )
-    if kind == "3211":
-        return elevator_3211_deg(
-            time,
-            t0=float(t0_3211),
-            unit=float(unit_3211),
-            amp_deg=float(doublet_amp_deg),
-        )
-    return 0.0
-
-
-def autopilot(
-    x,
-    dx,
-    time,
-    u0,
-    htr,
-    vtr,
-    tettr,
-    *,
-    elevator_maneuver: str | None = None,
-    elevator_doublet_amp_deg: float = 5.0,
-    elevator_extra_t0: tuple[float, ...] = (),
-    elevator_3211_t0: float = 10.0,
-    elevator_3211_unit: float = 1.0,
-):
+def autopilot(x, dx, time, u0, htr, vtr, tettr, maneuver: Maneuver | None = None):
     """
-    Управление u = [δT, δV, δN, δE].
+    Управление u = [δT, δв, δн, δэ] = балансировка u0 + автопилот (+ программа манёвра).
 
-    ``elevator_maneuver``: None | \"doublet\" | \"3211\".
-    На активном интервале манёвра:
-      — канал δV автопилота (тангаж/высота) отключён;
-      — δV = u0[1] + программа (градусы).
-    Тяга и боковой канал работают как обычно.
+    На интервале манёвра рулём: δв = u0[1] + программа (канал δв автопилота отключён).
+    На интервале манёвра РУД / фиксации РУД: δT = u0[0] + программа (автомат тяги отключён).
     """
     DdeltaT, DdeltaV = vh_hold(x, dx, htr, vtr, tettr)
     DdeltaN, DdeltaE = heading_hold(x, time)
@@ -170,22 +67,11 @@ def autopilot(
         [DdeltaT, DdeltaV, DdeltaN, DdeltaE], dtype=float
     )
 
-    if elevator_maneuver_active(
-        time,
-        elevator_maneuver,
-        extra_t0=elevator_extra_t0,
-        amp_deg=float(elevator_doublet_amp_deg),
-        t0_3211=float(elevator_3211_t0),
-        unit_3211=float(elevator_3211_unit),
-    ):
-        # не гасим вход: только trim + программа
-        U[1] = float(u0[1]) + elevator_program_deg(
-            time,
-            elevator_maneuver,
-            doublet_amp_deg=float(elevator_doublet_amp_deg),
-            extra_t0=elevator_extra_t0,
-            t0_3211=float(elevator_3211_t0),
-            unit_3211=float(elevator_3211_unit),
-        )
+    if maneuver is not None:
+        if maneuver.elevator_active(time):
+            U[1] = float(u0[1]) + maneuver.elevator_deg(time)
+        dthr = maneuver.throttle_offset(time)
+        if dthr is not None:
+            U[0] = float(u0[0]) + dthr
 
     return np.clip(U, UMIN, UMAX)
